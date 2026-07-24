@@ -193,7 +193,23 @@ fi
 codesign --verify --deep --strict --verbose=2 "$APP_DIR"
 
 rm -f "$UNSIGNED_PKG" "$SIGNED_PKG"
-pkgbuild --component "$APP_DIR" --install-location /Applications --scripts "$PKG_SCRIPTS_DIR" "$UNSIGNED_PKG"
+PKG_ROOT="$BUILD_DIR/pkg-root"
+COMPONENT_PLIST="$BUILD_DIR/component.plist"
+
+rm -rf "$PKG_ROOT"
+mkdir -p "$PKG_ROOT/Applications"
+cp -R "$APP_DIR" "$PKG_ROOT/Applications/"
+
+# Prevent macOS Installer from relocating the app to an existing copy.
+pkgbuild --analyze --root "$PKG_ROOT" "$COMPONENT_PLIST"
+/usr/libexec/PlistBuddy -c "Set :0:BundleIsRelocatable false" "$COMPONENT_PLIST"
+
+pkgbuild \
+  --root "$PKG_ROOT" \
+  --install-location / \
+  --component-plist "$COMPONENT_PLIST" \
+  --scripts "$PKG_SCRIPTS_DIR" \
+  "$UNSIGNED_PKG"
 
 if [[ -n "$PKG_SIGN_IDENTITY" ]]; then
   productsign --sign "$PKG_SIGN_IDENTITY" "$UNSIGNED_PKG" "$SIGNED_PKG"
