@@ -135,6 +135,7 @@ cp "$ROOT/macos/ChatGPTToCodexStatusBar/Info.plist" "$CONTENTS_DIR/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VERSION" "$CONTENTS_DIR/Info.plist" >/dev/null
 
 swiftc -O \
+  -target "$(uname -m)-apple-macosx13.0" \
   -framework AppKit \
   -framework CoreGraphics \
   -framework Foundation \
@@ -146,6 +147,7 @@ swiftc -O \
 # binary so it inherits the same code signature and Accessibility TCC grant
 # (both are covered by the single `codesign --deep` below).
 swiftc -O \
+  -target "$(uname -m)-apple-macosx13.0" \
   -framework AppKit \
   -framework ApplicationServices \
   -framework CoreGraphics \
