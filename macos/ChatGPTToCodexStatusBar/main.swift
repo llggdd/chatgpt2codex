@@ -129,6 +129,8 @@ private let desktopLocalizationRows: [String: [String]] = [
     "settingsTitle": ["ChatGPT To Codex Settings", "ChatGPT To Codex 설정", "ChatGPT To Codex 設定", "ChatGPT To Codex 设置", "ChatGPT To Codex 設定", "Ajustes de ChatGPT To Codex", "Réglages de ChatGPT To Codex", "ChatGPT To Codex Einstellungen", "Configurações do ChatGPT To Codex", "Impostazioni ChatGPT To Codex", "ChatGPT To Codex instellingen", "Ustawienia ChatGPT To Codex", "Настройки ChatGPT To Codex", "ChatGPT To Codex ayarları", "Cài đặt ChatGPT To Codex", "Pengaturan ChatGPT To Codex", "การตั้งค่า ChatGPT To Codex", "إعدادات ChatGPT To Codex", "ChatGPT To Codex सेटिंग्स", "Налаштування ChatGPT To Codex"],
     "settingsInfo": ["ezBuilder local MCP runtime settings", "ezBuilder 로컬 MCP 런타임 설정", "ezBuilder ローカル MCP ランタイム設定", "ezBuilder 本地 MCP 运行时设置", "ezBuilder 本機 MCP 執行階段設定", "Ajustes del runtime MCP local de ezBuilder", "Réglages du runtime MCP local ezBuilder", "Lokale MCP-Laufzeit von ezBuilder", "Configurações do runtime MCP local ezBuilder", "Impostazioni runtime MCP locale ezBuilder", "Lokale MCP-runtime instellingen van ezBuilder", "Ustawienia lokalnego runtime MCP ezBuilder", "Настройки локального MCP ezBuilder", "ezBuilder yerel MCP çalışma zamanı ayarları", "Cài đặt runtime MCP cục bộ ezBuilder", "Pengaturan runtime MCP lokal ezBuilder", "การตั้งค่ารันไทม์ MCP ภายในของ ezBuilder", "إعدادات تشغيل MCP المحلي من ezBuilder", "ezBuilder स्थानीय MCP रनटाइम सेटिंग्स", "Налаштування локального MCP runtime ezBuilder"],
     "language": ["Language", "언어", "言語", "语言", "語言", "Idioma", "Langue", "Sprache", "Idioma", "Lingua", "Taal", "Język", "Язык", "Dil", "Ngôn ngữ", "Bahasa", "ภาษา", "اللغة", "भाषा", "Мова"],
+    "instanceName": ["MCP instance name", "MCP 인스턴스 이름"],
+    "instanceNameHint": ["Give this installation a unique name, such as Office Mac or Home PC. The name is included in health checks and tool results.", "이 설치본을 구분할 고유 이름을 입력하세요(예: 사무실 Mac, 집 PC). 상태 확인과 도구 결과에 이 이름이 표시됩니다."],
     "projectFolder": ["Project folder", "프로젝트 폴더", "プロジェクトフォルダ", "项目文件夹", "專案資料夾", "Carpeta del proyecto", "Dossier du projet", "Projektordner", "Pasta do projeto", "Cartella progetto", "Projectmap", "Folder projektu", "Папка проекта", "Proje klasörü", "Thư mục dự án", "Folder proyek", "โฟลเดอร์โปรเจกต์", "مجلد المشروع", "प्रोजेक्ट फ़ोल्डर", "Тека проєкту"],
     "browse": ["Browse...", "찾아보기...", "参照...", "浏览...", "瀏覽...", "Examinar...", "Parcourir...", "Durchsuchen...", "Procurar...", "Sfoglia...", "Bladeren...", "Przeglądaj...", "Обзор...", "Gözat...", "Duyệt...", "Telusuri...", "เรียกดู...", "استعراض...", "ब्राउज़...", "Огляд..."],
     "launchAtLoginSetting": ["Launch app at login", "로그인 시 앱 실행", "ログイン時にアプリを起動", "登录时启动应用", "登入時啟動 App", "Iniciar la app al acceder", "Lancer l'app à la connexion", "App beim Anmelden starten", "Abrir app ao iniciar sessão", "Avvia app al login", "App starten bij inloggen", "Uruchamiaj aplikację przy logowaniu", "Запускать приложение при входе", "Girişte uygulamayı başlat", "Mở ứng dụng khi đăng nhập", "Jalankan app saat login", "เปิดแอปเมื่อเข้าสู่ระบบ", "تشغيل التطبيق عند تسجيل الدخول", "लॉगिन पर ऐप शुरू करें", "Запускати застосунок під час входу"],
@@ -198,6 +200,7 @@ private final class ServiceController {
     private let environment = ProcessInfo.processInfo.environment
     private let defaults = UserDefaults.standard
     private let selectedProjectFolderKey = "selectedProjectFolder"
+    private let displayNameKey = "displayName"
     private let publicHostnameKey = "publicHostname"
     private let cloudflaredTunnelNameKey = "cloudflaredTunnelName"
     private let enablePublicTunnelKey = "enablePublicTunnel"
@@ -216,6 +219,18 @@ private final class ServiceController {
         let short = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
         let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
         return short?.isEmpty == false ? short! : (build?.isEmpty == false ? build! : "0.0.0")
+    }
+
+    /// Human-readable name used to distinguish this installation from other
+    /// ChatGPT To Codex MCP registrations. The runtime persists the stable
+    /// instance id separately in device.json; this value is only the label.
+    var displayName: String {
+        let configured = environment["CHATGPT2CODEX_DISPLAY_NAME"]?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if configured?.isEmpty == false { return configured! }
+        let saved = defaults.string(forKey: displayNameKey)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if saved?.isEmpty == false { return saved! }
+        let host = ProcessInfo.processInfo.hostName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return host.isEmpty ? appName : "\(appName) (\(host))"
     }
 
     init() {
@@ -623,6 +638,10 @@ private final class ServiceController {
         defaults.set(url.path, forKey: selectedProjectFolderKey)
     }
 
+    func setDisplayName(_ value: String) {
+        defaults.set(value.trimmingCharacters(in: .whitespacesAndNewlines), forKey: displayNameKey)
+    }
+
     func clearSelectedProjectFolder() {
         defaults.removeObject(forKey: selectedProjectFolderKey)
     }
@@ -782,6 +801,7 @@ private final class ServiceController {
         export PATH=\(shellQuote(runtimeRoot.appendingPathComponent("bin").path))":$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
         export WORKSPACE=\(shellQuote(workspace))
         export PORT=\(port)
+        export CHATGPT2CODEX_DISPLAY_NAME=\(shellQuote(displayName))
         \(enablePublicTunnel ? "export CHATGPT2CODEX_EXPOSE_WEB=1" : "unset CHATGPT2CODEX_EXPOSE_WEB")
         \(publicHost.map { "export PUBLIC_HOSTNAME=\(shellQuote($0))" } ?? "unset PUBLIC_HOSTNAME")
         \(cloudflaredTunnelName.map { "export CLOUDFLARED_TUNNEL_NAME=\(shellQuote($0))" } ?? "")
@@ -965,6 +985,7 @@ private final class StatusBarAppDelegate: NSObject, NSApplicationDelegate, NSMen
     private var logWindow: NSWindow?
     private var doctorWindow: NSWindow?
     private weak var settingsLanguagePopup: NSPopUpButton?
+    private weak var settingsDisplayNameField: NSTextField?
     private weak var settingsProjectField: NSTextField?
     private weak var settingsLaunchAtLogin: NSButton?
     private weak var settingsStartOnLaunch: NSButton?
@@ -1405,7 +1426,7 @@ private final class StatusBarAppDelegate: NSObject, NSApplicationDelegate, NSMen
         settingsWindow?.close()
         let width: CGFloat = 540
         let hintWidth: CGFloat = 322
-        let publicHintY: CGFloat = 398
+        let publicHintY: CGFloat = 458
         let hintFont = NSFont.systemFont(ofSize: 10)
         func measuredHintHeight(_ text: String, width: CGFloat) -> CGFloat {
             let rect = (text as NSString).boundingRect(
@@ -1500,42 +1521,49 @@ private final class StatusBarAppDelegate: NSObject, NSApplicationDelegate, NSMen
         content.addSubview(projectField)
         content.addSubview(button(t("browse"), x: 428, y: 179, width: 84, action: #selector(browseProjectFolderFromSettings)))
 
+        content.addSubview(label(t("instanceName"), x: 28, y: 220, width: 170))
+        let displayNameField = field(controller.displayName, x: 190, y: 216, width: 322, placeholder: "Office Mac")
+        displayNameField.toolTip = t("instanceNameHint")
+        settingsDisplayNameField = displayNameField
+        content.addSubview(displayNameField)
+        content.addSubview(hint(t("instanceNameHint"), x: 190, y: 246, width: 322, height: 26))
+
         let launchAtLogin = NSButton(checkboxWithTitle: t("launchAtLoginSetting"), target: nil, action: nil)
-        launchAtLogin.frame = NSRect(x: 190, y: 220, width: 320, height: 22)
+        launchAtLogin.frame = NSRect(x: 190, y: 280, width: 320, height: 22)
         launchAtLogin.state = controller.launchAtLogin ? .on : .off
         settingsLaunchAtLogin = launchAtLogin
         content.addSubview(launchAtLogin)
         let startOnLaunch = NSButton(checkboxWithTitle: t("startOnOpenSetting"), target: nil, action: nil)
-        startOnLaunch.frame = NSRect(x: 190, y: 246, width: 320, height: 22)
+        startOnLaunch.frame = NSRect(x: 190, y: 306, width: 320, height: 22)
         startOnLaunch.state = controller.startMCPOnLaunch ? .on : .off
         settingsStartOnLaunch = startOnLaunch
         content.addSubview(startOnLaunch)
         let tokenConfigured = controller.ownerTokenConfigured()
         settingsOwnerTokenConfigured = tokenConfigured
-        content.addSubview(label(t("ownerToken"), x: 28, y: 272, width: 170))
-        let tokenStatus = label(tokenConfigured ? t("ownerTokenReady") : t("ownerTokenMissing"), x: 190, y: 272, width: 170)
+        content.addSubview(label(t("ownerToken"), x: 28, y: 332, width: 170))
+        let tokenStatus = label(tokenConfigured ? t("ownerTokenReady") : t("ownerTokenMissing"), x: 190, y: 332, width: 170)
         tokenStatus.textColor = tokenConfigured ? .systemGreen : .systemOrange
         settingsOwnerTokenStatus = tokenStatus
         content.addSubview(tokenStatus)
-        let tokenButton = button(t("ownerTokenGenerateCopy"), x: 190, y: 296, width: 210, action: #selector(generateAndCopyOwnerToken))
+        let tokenButton = button(t("ownerTokenGenerateCopy"), x: 190, y: 356, width: 210, action: #selector(generateAndCopyOwnerToken))
         settingsOwnerTokenButton = tokenButton
         content.addSubview(tokenButton)
-        let tokenCopyButton = button(t("ownerTokenCopy"), x: 410, y: 296, width: 102, action: #selector(copyStoredOwnerToken))
+        let tokenCopyButton = button(t("ownerTokenCopy"), x: 410, y: 356, width: 102, action: #selector(copyStoredOwnerToken))
         tokenCopyButton.isEnabled = loadOwnerTokenFromKeychain() != nil
         settingsOwnerTokenCopyButton = tokenCopyButton
         content.addSubview(tokenCopyButton)
 
         let publicTunnel = NSButton(checkboxWithTitle: t("publicTunnelSetting"), target: nil, action: nil)
-        publicTunnel.frame = NSRect(x: 190, y: 334, width: 322, height: 22)
+        publicTunnel.frame = NSRect(x: 190, y: 394, width: 322, height: 22)
         publicTunnel.state = controller.enablePublicTunnel ? .on : .off
         settingsPublicTunnel = publicTunnel
         content.addSubview(publicTunnel)
 
-        content.addSubview(label(t("publicHostname"), x: 28, y: 370, width: 170))
-        let hostField = field(controller.savedPublicHost ?? "", x: 190, y: 366, width: 230, placeholder: "chatgpt2codex.example.com")
+        content.addSubview(label(t("publicHostname"), x: 28, y: 430, width: 170))
+        let hostField = field(controller.savedPublicHost ?? "", x: 190, y: 426, width: 230, placeholder: "chatgpt2codex.example.com")
         settingsHostField = hostField
         content.addSubview(hostField)
-        content.addSubview(button(t("fixedDomainSetup"), x: 428, y: 365, width: 84, action: #selector(showFixedDomainSetup)))
+        content.addSubview(button(t("fixedDomainSetup"), x: 428, y: 425, width: 84, action: #selector(showFixedDomainSetup)))
         content.addSubview(hint(publicHintText, x: 190, y: publicHintY, width: hintWidth, height: publicHintHeight))
         content.addSubview(label(t("localPort"), x: 28, y: localPortY, width: 170))
         let portField = field("\(controller.port)", x: 190, y: portFieldY, width: 120)
@@ -1634,6 +1662,7 @@ private final class StatusBarAppDelegate: NSObject, NSApplicationDelegate, NSMen
         if let port = Int(portField.stringValue), port > 0 {
             controller.setPort(port)
         }
+        controller.setDisplayName(settingsDisplayNameField?.stringValue ?? controller.displayName)
         let shouldRestart = latestHealth || controller.isManagedProcessRunning
         settingsWindow?.close()
         rebuildMenu()

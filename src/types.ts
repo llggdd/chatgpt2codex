@@ -1,3 +1,5 @@
+import type { DeviceIdentity } from "./identity/device.js";
+
 /**
  * chatgpt2codex shared contract.
  *
@@ -84,6 +86,8 @@ export interface Config {
 export interface ToolContext {
   workspaceRoot: string;
   stateDir: string;
+  /** Stable per-install identity used to disambiguate MCP/action instances. */
+  identity?: DeviceIdentity;
   /** Loaded/loadable project registry entries. */
   registry: ProjectRegistryEntry[];
   /** Append-only audit ledger sink. */
@@ -94,6 +98,13 @@ export interface ToolContext {
   store: {
     loadProjects(): Promise<ProjectRegistryEntry[]>;
     saveProjects(p: ProjectRegistryEntry[]): Promise<void>;
+    getSession(): Promise<unknown>;
+    setSession(s: unknown): Promise<void>;
+  };
+  /** Optional per-connection session state. HTTP MCP connections use this
+   * to isolate active project/lease selections from other simultaneous
+   * clients; local stdio and Actions fall back to the persistent store. */
+  sessionStore?: {
     getSession(): Promise<unknown>;
     setSession(s: unknown): Promise<void>;
   };

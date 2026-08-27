@@ -23,6 +23,11 @@ import { createHttpServer, defaultHttpServerConfig } from "./http.js";
 
 const OWNER_TOKEN = "unit-test-owner-token-mcp-remote";
 
+const PNG_BYTES = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+  "base64",
+);
+
 function base64Url(bytes: Buffer): string {
   return bytes.toString("base64").replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/u, "");
 }
@@ -43,8 +48,12 @@ async function getFreePort(): Promise<number> {
   return port;
 }
 
-function makeCtx(stateDir: string, projectRoot: string): ToolContext {
-  const registry = [{ projectId: "proj", name: "proj", root: projectRoot, aliases: [] }];
+function makeCtx(
+  stateDir: string,
+  projectRoot: string,
+  additionalProjects: Array<{ projectId: string; name: string; root: string; aliases: string[] }> = [],
+): ToolContext {
+  const registry = [{ projectId: "proj", name: "proj", root: projectRoot, aliases: [] }, ...additionalProjects];
   let currentSession: unknown = { activeProjectId: null, mode: "observe", lease: null };
   return {
     workspaceRoot: path.dirname(projectRoot),
@@ -163,6 +172,7 @@ describe("remote MCP session (/mcp, how ChatGPT connects) marks ctx.remote", () 
   let projectRoot: string;
   let stop: (() => Promise<void>) | undefined;
   let client: Client | undefined;
+  let secondClient: Client | undefined;
 
   beforeEach(async () => {
     stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "chatgpt2codex-mcp-remote-"));
@@ -173,7 +183,9 @@ describe("remote MCP session (/mcp, how ChatGPT connects) marks ctx.remote", () 
   afterEach(async () => {
     delete process.env.CHATGPT2CODEX_CONTROL_CHATGPT;
     await client?.close().catch(() => undefined);
+    await secondClient?.close().catch(() => undefined);
     client = undefined;
+    secondClient = undefined;
     await stop?.();
     stop = undefined;
     await fs.rm(stateDir, { recursive: true, force: true });
@@ -217,4 +229,54 @@ describe("remote MCP session (/mcp, how ChatGPT connects) marks ctx.remote", () 
     expect(result.isError).toBeFalsy();
     expect(result.structuredContent?.lease?.preset).toBe("full-write");
   }, 20_000);
+
+  it("keeps active project and lease state isolated across simultaneous MCP clients", async () => {
+    const secondProjectRoot = await fs.mkdtemp(path.join(os.tmpdir(), "chatgpt2codex-mcp-remote-second-project-"));
+    const sourceDir = await fs.mkdtemp(path.join(os.tmpdir(), "chatgpt2codex-mcp-remote-source-"));
+    const sourcePath = path.join(sourceDir, "fixture.png");
+    await fs.writeFile(sourcePath, PNG_BYTES);
+
+    try {
+      const ctx = makeCtx(stateDir, projectRoot, [
+        { projectId: "home", name: "home", root: secondProjectRoot, aliases: [] },
+      ]);
+      const app = await startApp(ctx);
+      stop = app.stop;
+
+      const token = await getMcpAccessToken(app.baseUrl);
+      client = await connectMcpClient(app.baseUrl, token);
+      secondClient = await connectMcpClient(app.baseUrl, token);
+
+      const [officeSelection, homeSelection] = await Promise.all([
+        client.callTool({
+          name: "project_select",
+          arguments: { projectId: "proj", reason: "office task", preset: "full-write" },
+        }),
+        secondClient.callTool({
+          name: "project_select",
+          arguments: { projectId: "home", reason: "home task", preset: "full-write" },
+        }),
+      ]);
+      expect((officeSelection as { structuredContent?: { lease?: { projectId?: string } } }).structuredContent?.lease?.projectId).toBe("proj");
+      expect((homeSelection as { structuredContent?: { lease?: { projectId?: string } } }).structuredContent?.lease?.projectId).toBe("home");
+
+      const [officeSave, homeSave] = await Promise.all([
+        client.callTool({
+          name: "save_chatgpt_image",
+          arguments: { source: "path", sourcePath, destPath: ".chatgpt2codex/images/office.png" },
+        }),
+        secondClient.callTool({
+          name: "save_chatgpt_image",
+          arguments: { source: "path", sourcePath, destPath: ".chatgpt2codex/images/home.png" },
+        }),
+      ]);
+      expect((officeSave as { structuredContent?: { project?: string } }).structuredContent?.project).toBe("proj");
+      expect((homeSave as { structuredContent?: { project?: string } }).structuredContent?.project).toBe("home");
+      await expect(fs.readFile(path.join(projectRoot, ".chatgpt2codex/images/office.png"))).resolves.toEqual(PNG_BYTES);
+      await expect(fs.readFile(path.join(secondProjectRoot, ".chatgpt2codex/images/home.png"))).resolves.toEqual(PNG_BYTES);
+    } finally {
+      await fs.rm(secondProjectRoot, { recursive: true, force: true });
+      await fs.rm(sourceDir, { recursive: true, force: true });
+    }
+  }, 30_000);
 });

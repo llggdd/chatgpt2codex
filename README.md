@@ -110,6 +110,18 @@ macOS short version:
 10. Register that `/mcp` URL in ChatGPT Apps / Connectors and approve with the
     Owner Token shown by the app.
 
+If you connect more than one computer, open **Settings...** on each one and set
+an unmistakable **MCP instance name** (for example, `Office Mac` and `Home PC`).
+Saving settings restarts the local MCP process when it is running. Each install
+also gets a stable `instanceId`; the name and id are returned by `/healthz`, the
+Actions health endpoint, the `device_identity` tool, and every tool-call proof.
+Separate remote MCP connections also keep their active project/lease state
+separate, so simultaneous tasks do not switch each other's selected project.
+After changing a name, refresh or reconnect the ChatGPT app if it has cached
+the previous MCP metadata; the connector URL still must point to that machine.
+This isolation is per remote MCP connection; workflows sharing one connection
+should still pass an explicit `projectId` when they run concurrently.
+
 Windows short version:
 
 1. Download `chatgpt2codex-0.2.0-windows-setup.exe` from the [latest release](https://github.com/ezBuilder/chatgpt2codex/releases/tag/v0.2.0).
@@ -121,7 +133,18 @@ Windows short version:
    web connector if needed, then click **Start MCP**.
 6. Copy the `/mcp` Connector URL and approve it in ChatGPT with the Owner Token.
 
+Set a different **MCP instance name** on every Windows computer before copying
+its connector URL. The name is persisted locally and is included with health
+checks and tool results, so you can confirm which machine ChatGPT reached.
+
 Keep the Owner Token private. Treat it like a password.
+
+For terminal-only setup, inspect or rename the current installation with:
+
+```bash
+chatgpt2codex device
+chatgpt2codex device --set-name "Office Mac"
+```
 
 ## First Prompt To Try
 

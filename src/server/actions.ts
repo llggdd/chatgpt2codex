@@ -6,6 +6,7 @@ import { createE2eScreenshotShare, readE2eScreenshotShare } from "../e2e/screens
 import { CONTROL_TOOL_NAMES, isControlChatGptExposed } from "../control/policy.js";
 import { createServer as createMcpServer } from "./mcp-server.js";
 import { TOOL_AVAILABILITY_GATE, toolCallProof } from "./tool-proof.js";
+import { actionBridgeName, fallbackDeviceIdentity, mcpServerName } from "../identity/device.js";
 import { normalizeObjectSchema, safeParseAsync, getParseErrorMessage } from "@modelcontextprotocol/sdk/server/zod-compat.js";
 
 interface CallToolResultLike {
@@ -29,6 +30,15 @@ interface ActionRoute {
 }
 
 const ACTION_ROUTES: ActionRoute[] = [
+  {
+    path: "/actions/device-identity",
+    tool: "device_identity",
+    operationId: "device_identity",
+    summary: "Identify the connected MCP instance",
+    description:
+      "Returns the stable per-install identity and display name. Call this when multiple computers or ChatGPT registrations may be connected, then confirm the instance before editing files.",
+    schema: "EmptyInput",
+  },
   {
     path: "/actions/agent-guide",
     tool: "agent_guide",
@@ -314,6 +324,7 @@ const ACTION_ROUTES: ActionRoute[] = [
 ];
 
 const OPENAPI_ACTION_TOOL_NAMES = new Set([
+  "device_identity",
   "agent_guide",
   "goal_intake",
   "goal_loop",
@@ -523,7 +534,7 @@ async function actionResponse(ctx: ToolContext, publicOrigin: string, tool: stri
   return {
     ok,
     tool,
-    toolCall: toolCallProof(tool, ok),
+    toolCall: toolCallProof(tool, ok, ctx.identity),
     text: inlineText,
     imageMarkdown: enriched.markdown[0],
     imageMarkdownList: enriched.markdown,
@@ -532,7 +543,7 @@ async function actionResponse(ctx: ToolContext, publicOrigin: string, tool: stri
   };
 }
 
-function openApiSpec(publicOrigin: string): Record<string, unknown> {
+function openApiSpec(publicOrigin: string, identity = fallbackDeviceIdentity()): Record<string, unknown> {
   const paths: Record<string, unknown> = {
     "/actions/health": {
       get: {
@@ -600,7 +611,7 @@ function openApiSpec(publicOrigin: string): Record<string, unknown> {
   return {
     openapi: "3.1.0",
     info: {
-      title: "chatgpt2codex Custom GPT Actions",
+      title: `${identity.displayName} Custom GPT Actions`,
       version: "0.1.6",
       description:
         "OpenAPI bridge for Custom GPTs. This does not call OpenAI Codex or spend Codex quota; ChatGPT drives local coding actions through chatgpt2codex. Hard gate: do not claim local project inspection, edits, tests, commits, or image saves unless a current-turn ActionToolResponse includes ok=true and toolCall.namespace=ChatGPT_To_Codex. If the active ChatGPT app was Image Generation/ImageGen, image_gen, python_user_visible, or a text-only answer, no chatgpt2codex local work happened; reselect/reconnect ChatGPT To Codex or refresh this Action schema. For /goal or broad implementation prompts, call goal_intake or goal_loop immediately before long reasoning. This compact schema stays under 30 operations including action_health and call_tool, and exposes exact tool names such as workspace_list_projects, project_select, code_search, file_read_slice, file_apply_patch, file_create, local_shell_run, and e2e_test_and_show_screenshot for source editing and E2E proof. It avoids broad context-pack actions that ChatGPT safety may block; inspect with code_search followed by narrow file_read_slice calls instead. It also exposes E2E server/app launch plus screenshot capture. Hidden tools remain reachable through call_tool. ChatGPT's sandbox cannot write /Users/... directly; use these actions. For generated images, use a Share/Copy Link/content URL, copied image, download, or local path with save_chatgpt_image/save_chatgpt_image_from_url.",
@@ -990,6 +1001,10 @@ function openApiSpec(publicOrigin: string): Record<string, unknown> {
           properties: {
             ok: { type: "boolean" },
             name: { type: "string" },
+            registrationName: { type: "string" },
+            serverName: { type: "string" },
+            instanceId: { type: "string" },
+            instanceName: { type: "string" },
             actions: { type: "integer" },
             toolAvailabilityGate: { "$ref": "#/components/schemas/ToolAvailabilityGate" },
           },
@@ -1020,6 +1035,10 @@ function openApiSpec(publicOrigin: string): Record<string, unknown> {
             proceedOnlyIfOk: { type: "boolean" },
             noToolResultMeansNoLocalWork: { type: "boolean" },
             instruction: { type: "string" },
+            instanceId: { type: "string" },
+            instanceName: { type: "string" },
+            instanceSuffix: { type: "string" },
+            serverName: { type: "string" },
           },
         },
         ErrorResponse: {
@@ -1037,11 +1056,18 @@ function openApiSpec(publicOrigin: string): Record<string, unknown> {
 
 export function registerActionRoutes(app: Express, ctx: ToolContext, publicUrl: URL): void {
   const publicOrigin = publicUrl.origin;
+  const identity = ctx.identity ?? fallbackDeviceIdentity();
 
   app.get("/actions/health", (_req, res) => {
     res.json({
       ok: true,
+      // Keep the legacy `name` stable for existing Action schemas. The
+      // per-install bridge name is exposed separately for disambiguation.
       name: "chatgpt2codex-actions",
+      registrationName: actionBridgeName(identity),
+      serverName: mcpServerName(identity),
+      instanceId: identity.instanceId,
+      instanceName: identity.displayName,
       actions: ACTION_ROUTES.length,
       openApiOperations: openApiActionRoutes().length + 2,
       openApiToolNames: openApiActionRoutes().map((route) => route.tool),
@@ -1050,7 +1076,7 @@ export function registerActionRoutes(app: Express, ctx: ToolContext, publicUrl: 
   });
 
   app.get("/actions/openapi.json", (_req, res) => {
-    res.json(openApiSpec(publicOrigin));
+    res.json(openApiSpec(publicOrigin, identity));
   });
 
   app.get("/actions/e2e-screenshot-inline/:token/:filename", async (req, res) => {

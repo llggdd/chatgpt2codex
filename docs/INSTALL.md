@@ -45,14 +45,15 @@ ChatGPT To Codex는 내 Mac 또는 Windows PC에서 실행되는 로컬 코딩 �
 1. macOS는 메뉴 막대 아이콘, Windows는 시스템 트레이 아이콘을 누릅니다.
 2. **Settings...**를 엽니다.
 3. **Project folder**에서 ChatGPT가 도와줄 프로젝트 폴더를 고릅니다.
-4. ChatGPT 웹에서 연결하려면 **ChatGPT web connector**를 켭니다.
-5. 고정 도메인이 없다면 도메인 칸은 비워둡니다. 그러면 임시 `trycloudflare.com` 주소가 만들어질 수 있습니다.
-6. **Start MCP**를 누릅니다.
-7. 상태가 켜질 때까지 기다립니다.
-8. **Copy Connector URL**을 누릅니다. 주소는 `/mcp`로 끝나야 합니다.
-9. ChatGPT의 Apps, Apps & Connectors, 또는 Connectors 설정에서 새 앱/커넥터를 만듭니다.
-10. 복사한 `/mcp` 주소를 붙여넣습니다.
-11. 승인 화면이 나오면 ChatGPT To Codex 앱에서 Owner Token을 복사해 입력합니다.
+4. 여러 컴퓨터를 연결한다면 **MCP instance name**에 `Office Mac`, `Home PC`처럼 서로 다른 이름을 입력합니다.
+5. ChatGPT 웹에서 연결하려면 **ChatGPT web connector**를 켭니다.
+6. 고정 도메인이 없다면 도메인 칸은 비워둡니다. 그러면 임시 `trycloudflare.com` 주소가 만들어질 수 있습니다.
+7. **Start MCP**를 누릅니다. 이름을 바꾼 경우 실행 중인 MCP가 자동으로 재시작됩니다.
+8. 상태가 켜질 때까지 기다립니다.
+9. **Copy Connector URL**을 누릅니다. 주소는 `/mcp`로 끝나야 합니다.
+10. ChatGPT의 Apps, Apps & Connectors, 또는 Connectors 설정에서 새 앱/커넥터를 만듭니다.
+11. 복사한 `/mcp` 주소를 붙여넣습니다.
+12. 승인 화면이 나오면 ChatGPT To Codex 앱에서 Owner Token을 복사해 입력합니다.
 
 ### E2E 스크린샷 사용
 
@@ -75,6 +76,8 @@ Windows에서는 브라우저 또는 앱 창 캡처 권한 경고가 뜨면 허�
 
 - Owner Token은 비밀번호처럼 다루세요.
 - 임시 `trycloudflare.com` 주소는 앱이나 터널을 재시작하면 바뀔 수 있습니다.
+- 이름을 바꾼 뒤 ChatGPT에 예전 이름이 남아 있으면 커넥터를 새로고침하거나 다시 연결하고, URL이 원하는 컴퓨터의 도메인인지 확인하세요.
+- 동시 작업 분리는 원격 MCP 연결별로 적용됩니다. 같은 연결에서 여러 프로젝트를 동시에 다룰 때는 각 호출에 `projectId`를 명시하세요.
 - Windows SmartScreen 경고는 아직 널리 알려지지 않은 새 설치파일에서 보일 수 있습니다. 공식 릴리스 파일인지 확인한 뒤 진행하세요.
 
 ## English
@@ -113,6 +116,19 @@ PKG is better for this release. A DMG is great for drag-and-drop apps, but this 
 5. Click **Copy Connector URL**. It should end with `/mcp`.
 6. Add that URL in ChatGPT under Apps, Apps & Connectors, or Connectors.
 7. Approve the connection with the Owner Token from the app.
+
+If you use more than one computer, set a unique **MCP instance name** in
+**Settings...** on each computer (for example, `Office Mac` and `Home PC`).
+Saving settings restarts a running MCP process so the new identity is active.
+The runtime also creates a stable `instanceId` automatically. Both values are
+visible in `/healthz`, the Actions health endpoint, the `device_identity` tool,
+and tool-call proofs.
+Remote MCP connections keep their active project and lease state isolated, so
+multiple simultaneous ChatGPT tasks can select different projects safely.
+If ChatGPT keeps showing the old metadata after a rename, refresh or reconnect
+that app registration and verify the connector URL points to the intended host.
+Isolation is per remote MCP connection; concurrent workflows sharing one
+connection should pass an explicit `projectId`.
 
 ### E2E screenshots
 
