@@ -80,6 +80,33 @@ Windows에서는 브라우저 또는 앱 창 캡처 권한 경고가 뜨면 허�
 - 동시 작업 분리는 원격 MCP 연결별로 적용됩니다. 같은 연결에서 여러 프로젝트를 동시에 다룰 때는 각 호출에 `projectId`를 명시하세요.
 - Windows SmartScreen 경고는 아직 널리 알려지지 않은 새 설치파일에서 보일 수 있습니다. 공식 릴리스 파일인지 확인한 뒤 진행하세요.
 
+### Cloudflare 터널 끄기 및 로컬 모드로 전환
+
+로컬 모드에서는 Cloudflare가 필요하지 않습니다. 앱에서 **ChatGPT web connector**를 끄고 **Stop MCP** 또는 **Restart MCP**를 누르면 MCP 주소가 `http://127.0.0.1:7979/mcp`로 돌아갑니다. 터미널에서 `start-chatgpt.sh`를 직접 실행했다면 `Ctrl+C`로 종료하면 앱이 시작한 터널도 함께 종료됩니다.
+
+이전에 `cloudflared service install`을 실행해 시스템 서비스까지 등록했다면, 앱을 먼저 종료한 뒤 macOS 터미널에서 다음을 실행합니다.
+
+```bash
+sudo cloudflared service uninstall
+sudo launchctl bootout system/com.cloudflare.cloudflared 2>/dev/null || true
+pgrep -af cloudflared || true
+```
+
+`pgrep`에 남은 프로세스가 있으면 해당 PID가 이 앱의 터널인지 확인한 뒤 종료합니다. 이 명령은 이 컴퓨터의 시스템 서비스 등록만 제거하며 Cloudflare 대시보드의 Tunnel을 삭제하지는 않습니다. 다른 Cloudflare 터널을 같은 컴퓨터에서 사용 중이면 PID를 확인하지 않고 전체 `cloudflared`를 종료하지 마세요.
+
+Windows에서 서비스를 등록했다면 관리자 PowerShell에서 `cloudflared service uninstall`을 실행한 뒤 트레이 앱을 종료합니다. 다른 터널이 있으면 모든 `cloudflared` 프로세스를 일괄 종료하지 말고 해당 PID만 확인해 종료하세요.
+
+다시 공개 연결을 만들 때는 컴퓨터마다 서로 다른 Named Tunnel과 Cloudflare Tunnel credentials/token을 사용하세요. **Owner Token은 Cloudflare credentials가 아닙니다.** 새 터널의 토큰은 `PUBLIC_HOSTNAME`과 함께 앱에 전달합니다.
+
+```bash
+export PUBLIC_HOSTNAME=mcp2.example.com
+export CLOUDFLARED_TUNNEL_TOKEN='새 Named Tunnel의 Cloudflare 토큰'
+export CHATGPT2CODEX_EXPOSE_WEB=1
+./start-chatgpt.sh
+```
+
+앱이 관리하는 터널과 launchd 시스템 서비스를 동시에 실행하지 마세요. 확인할 때는 각 컴퓨터의 `/healthz`에서 `instanceId`와 `serverName`이 서로 다른지 확인합니다.
+
 ## English
 
 ### What is it?
@@ -147,6 +174,33 @@ On Windows, allow the browser or app window to be visible while capturing. If a 
 - Keep the Owner Token private.
 - Temporary `trycloudflare.com` URLs can change after restart.
 - Windows SmartScreen can warn on new unsigned installers. Continue only when the file came from the official GitHub release.
+
+### Turn off Cloudflare and return to local mode
+
+Cloudflare is not needed for local-only use. In the app, turn off **ChatGPT web connector** and click **Stop MCP** or **Restart MCP**; the connector returns to `http://127.0.0.1:7979/mcp`. If you started `start-chatgpt.sh` in a terminal, press `Ctrl+C` to stop the app-managed tunnel as well.
+
+If you previously ran `cloudflared service install`, quit the app first and remove the macOS system service:
+
+```bash
+sudo cloudflared service uninstall
+sudo launchctl bootout system/com.cloudflare.cloudflared 2>/dev/null || true
+pgrep -af cloudflared || true
+```
+
+If `pgrep` still shows a process, verify its PID belongs to this app before stopping it. This removes only the local service registration; it does not delete the Tunnel from the Cloudflare dashboard. Do not stop every `cloudflared` process blindly if this computer hosts another tunnel.
+
+On Windows, run `cloudflared service uninstall` from an elevated PowerShell, then quit the tray app. If another tunnel is in use, stop only the verified process for this app.
+
+When enabling public access again, use a different Named Tunnel and Cloudflare Tunnel credentials/token for each computer. The **Owner Token is not a Cloudflare credential**.
+
+```bash
+export PUBLIC_HOSTNAME=mcp2.example.com
+export CLOUDFLARED_TUNNEL_TOKEN='token for the new Named Tunnel'
+export CHATGPT2CODEX_EXPOSE_WEB=1
+./start-chatgpt.sh
+```
+
+Run either the app-managed tunnel or the launchd system service, never both. Verify that each computer's `/healthz` reports a different `instanceId` and `serverName`.
 
 ## Japanese
 
