@@ -57,6 +57,8 @@ internal sealed class LauncherForm : Form
         {"quit", new[] {"Quit", "종료", "終了", "退出", "結束", "Salir", "Quitter", "Beenden", "Sair", "Esci", "Afsluiten", "Zakończ", "Выход", "Çık", "Thoát", "Keluar", "ออก", "إنهاء", "बंद करें", "Вийти"}},
         {"settingsTitle", new[] {"ChatGPT To Codex Settings", "ChatGPT To Codex 설정", "ChatGPT To Codex 設定", "ChatGPT To Codex 设置", "ChatGPT To Codex 設定", "Ajustes de ChatGPT To Codex", "Réglages de ChatGPT To Codex", "ChatGPT To Codex Einstellungen", "Configurações do ChatGPT To Codex", "Impostazioni ChatGPT To Codex", "ChatGPT To Codex instellingen", "Ustawienia ChatGPT To Codex", "Настройки ChatGPT To Codex", "ChatGPT To Codex ayarları", "Cài đặt ChatGPT To Codex", "Pengaturan ChatGPT To Codex", "การตั้งค่า ChatGPT To Codex", "إعدادات ChatGPT To Codex", "ChatGPT To Codex सेटिंग्स", "Налаштування ChatGPT To Codex"}},
         {"language", new[] {"Language", "언어", "言語", "语言", "語言", "Idioma", "Langue", "Sprache", "Idioma", "Lingua", "Taal", "Język", "Язык", "Dil", "Ngôn ngữ", "Bahasa", "ภาษา", "اللغة", "भाषा", "Мова"}},
+        {"instanceName", new[] {"MCP instance name", "MCP 인스턴스 이름"}},
+        {"instanceNameHint", new[] {"Give this installation a unique name, such as Office PC or Home PC. The name is included in health checks and tool results.", "이 설치본을 구분할 고유 이름을 입력하세요(예: 사무실 PC, 집 PC). 상태 확인과 도구 결과에 이 이름이 표시됩니다."}},
         {"projectFolder", new[] {"Project folder", "프로젝트 폴더", "プロジェクトフォルダ", "项目文件夹", "專案資料夾", "Carpeta del proyecto", "Dossier du projet", "Projektordner", "Pasta do projeto", "Cartella progetto", "Projectmap", "Folder projektu", "Папка проекта", "Proje klasörü", "Thư mục dự án", "Folder proyek", "โฟลเดอร์โปรเจกต์", "مجلد المشروع", "प्रोजेक्ट फ़ोल्डर", "Тека проєкту"}},
         {"browse", new[] {"Browse...", "찾아보기...", "参照...", "浏览...", "瀏覽...", "Examinar...", "Parcourir...", "Durchsuchen...", "Procurar...", "Sfoglia...", "Bladeren...", "Przeglądaj...", "Обзор...", "Gözat...", "Duyệt...", "Telusuri...", "เรียกดู...", "استعراض...", "ब्राउज़...", "Огляд..."}},
         {"launchWindowsSetting", new[] {"Launch ChatGPT To Codex when Windows starts", "Windows 시작 시 ChatGPT To Codex 실행", "Windows 起動時に ChatGPT To Codex を起動", "Windows 启动时启动 ChatGPT To Codex", "Windows 啟動時啟動 ChatGPT To Codex", "Iniciar ChatGPT To Codex con Windows", "Lancer ChatGPT To Codex au démarrage de Windows", "ChatGPT To Codex beim Windows-Start starten", "Abrir ChatGPT To Codex ao iniciar o Windows", "Avvia ChatGPT To Codex con Windows", "ChatGPT To Codex starten met Windows", "Uruchamiaj ChatGPT To Codex z Windows", "Запускать ChatGPT To Codex с Windows", "Windows açılışında ChatGPT To Codex başlat", "Mở ChatGPT To Codex cùng Windows", "Jalankan ChatGPT To Codex saat Windows mulai", "เปิด ChatGPT To Codex พร้อม Windows", "تشغيل ChatGPT To Codex عند بدء Windows", "Windows शुरू होने पर ChatGPT To Codex चलाएं", "Запускати ChatGPT To Codex з Windows"}},
@@ -101,6 +103,7 @@ internal sealed class LauncherForm : Form
     private readonly string settingsFile;
     private readonly string defaultWorkspace;
     private string configuredPublicHost;
+    private string displayName;
     private string lastConnectorUrl;
     private int port;
     private string preferredLanguage = "auto";
@@ -145,6 +148,7 @@ internal sealed class LauncherForm : Form
         settingsFile = Path.Combine(appDataDir, "settings.ini");
         defaultWorkspace = ResolveDefaultWorkspace();
         configuredPublicHost = ResolveConfiguredPublicHost();
+        displayName = ResolveConfiguredDisplayName();
         port = ResolvePort();
         publicTunnelEnabled = false;
         githubRepoUrl = Environment.GetEnvironmentVariable("CHATGPT2CODEX_UPDATE_REPO_URL");
@@ -415,6 +419,14 @@ internal sealed class LauncherForm : Form
         return value.TrimEnd('/');
     }
 
+    private string ResolveConfiguredDisplayName()
+    {
+        var value = Environment.GetEnvironmentVariable("CHATGPT2CODEX_DISPLAY_NAME");
+        if (!string.IsNullOrWhiteSpace(value)) return value.Trim();
+        var machine = Environment.MachineName;
+        return string.IsNullOrWhiteSpace(machine) ? "ChatGPT To Codex" : "ChatGPT To Codex (" + machine + ")";
+    }
+
     private string LoadSelectedProjectPath()
     {
         try
@@ -469,6 +481,7 @@ internal sealed class LauncherForm : Form
                 var value = DecodeSetting(rawLine.Substring(index + 1));
                 int parsedPort;
                 if (key == "ProjectFolder" && Directory.Exists(value)) selectedProjectPath = Path.GetFullPath(value);
+                else if (key == "DisplayName" && !string.IsNullOrWhiteSpace(value)) displayName = value.Trim();
                 else if (key == "Port" && int.TryParse(value, out parsedPort) && parsedPort > 0) port = parsedPort;
                 else if (key == "PublicHostname") configuredPublicHost = string.IsNullOrWhiteSpace(value) ? null : value.Trim();
                 else if (key == "EnablePublicTunnel") publicTunnelEnabled = ParseBool(value);
@@ -499,6 +512,7 @@ internal sealed class LauncherForm : Form
         var lines = new[]
         {
             "ProjectFolder=" + EncodeSetting(selectedProjectPath ?? string.Empty),
+            "DisplayName=" + EncodeSetting(displayName ?? string.Empty),
             "Port=" + EncodeSetting(port.ToString()),
             "PublicHostname=" + EncodeSetting(configuredPublicHost ?? string.Empty),
             "EnablePublicTunnel=" + EncodeSetting(publicTunnelEnabled ? "true" : "false"),
@@ -757,7 +771,7 @@ internal sealed class LauncherForm : Form
         {
             form.Text = L("settingsTitle");
             form.Width = 640;
-            form.Height = 670;
+            form.Height = 710;
             form.StartPosition = FormStartPosition.CenterParent;
             form.FormBorderStyle = FormBorderStyle.FixedDialog;
             form.MaximizeBox = false;
@@ -776,13 +790,23 @@ internal sealed class LauncherForm : Form
             languageBox.SelectedIndex = LanguageOptionIndex();
             form.Controls.Add(languageBox);
 
-            form.Controls.Add(NewLabel(L("projectFolder"), 24, 102, 150));
+            form.Controls.Add(NewLabel(L("instanceName"), 24, 102, 150));
+            var displayNameBox = new TextBox();
+            displayNameBox.Text = displayName ?? string.Empty;
+            displayNameBox.SetBounds(180, 98, 342, 24);
+            form.Controls.Add(displayNameBox);
+            var instanceHint = NewLabel(L("instanceNameHint"), 180, 126, 342);
+            instanceHint.ForeColor = System.Drawing.SystemColors.GrayText;
+            instanceHint.AutoEllipsis = true;
+            form.Controls.Add(instanceHint);
+
+            form.Controls.Add(NewLabel(L("projectFolder"), 24, 154, 150));
             var projectBox = new TextBox();
             projectBox.Text = selectedProjectPath ?? string.Empty;
             projectBox.ReadOnly = true;
-            projectBox.SetBounds(180, 98, 250, 24);
+            projectBox.SetBounds(180, 150, 250, 24);
             form.Controls.Add(projectBox);
-            var browseButton = NewButton(L("browse"), 440, 96, 82);
+            var browseButton = NewButton(L("browse"), 440, 148, 82);
             browseButton.Click += delegate
             {
                 using (var dialog = new FolderBrowserDialog())
@@ -804,100 +828,100 @@ internal sealed class LauncherForm : Form
             var launchCheck = new CheckBox();
             launchCheck.Text = L("launchWindowsSetting");
             launchCheck.Checked = launchAtStartup;
-            launchCheck.SetBounds(180, 138, 320, 24);
+            launchCheck.SetBounds(180, 190, 320, 24);
             form.Controls.Add(launchCheck);
 
             var startCheck = new CheckBox();
             startCheck.Text = L("startOnOpenSetting");
             startCheck.Checked = startMcpOnOpen;
-            startCheck.SetBounds(180, 166, 320, 24);
+            startCheck.SetBounds(180, 218, 320, 24);
             form.Controls.Add(startCheck);
 
             var updatesCheck = new CheckBox();
             updatesCheck.Text = L("autoUpdatesSetting");
             updatesCheck.Checked = autoCheckUpdates;
-            updatesCheck.SetBounds(180, 194, 320, 24);
+            updatesCheck.SetBounds(180, 246, 320, 24);
             form.Controls.Add(updatesCheck);
 
             var tunnelCheck = new CheckBox();
             tunnelCheck.Text = L("publicTunnelSetting");
             tunnelCheck.Checked = publicTunnelEnabled;
-            tunnelCheck.SetBounds(180, 222, 390, 24);
+            tunnelCheck.SetBounds(180, 274, 390, 24);
             form.Controls.Add(tunnelCheck);
 
-            form.Controls.Add(NewLabel(L("publicHostname"), 24, 262, 150));
+            form.Controls.Add(NewLabel(L("publicHostname"), 24, 314, 150));
             var hostBox = new TextBox();
             hostBox.Text = configuredPublicHost ?? string.Empty;
-            hostBox.SetBounds(180, 258, 342, 24);
+            hostBox.SetBounds(180, 310, 342, 24);
             form.Controls.Add(hostBox);
 
-            var hostHint = NewLabel(L("publicHostnameHint"), 180, 288, 342);
-            hostHint.SetBounds(180, 286, 342, 42);
+            var hostHint = NewLabel(L("publicHostnameHint"), 180, 340, 342);
+            hostHint.SetBounds(180, 338, 342, 42);
             hostHint.ForeColor = System.Drawing.SystemColors.GrayText;
             form.Controls.Add(hostHint);
 
-            form.Controls.Add(NewLabel(L("localPort"), 24, 342, 150));
+            form.Controls.Add(NewLabel(L("localPort"), 24, 394, 150));
             var portBox = new NumericUpDown();
             portBox.Minimum = 1;
             portBox.Maximum = 65535;
             portBox.Value = Math.Min(65535, Math.Max(1, port));
-            portBox.SetBounds(180, 338, 120, 24);
+            portBox.SetBounds(180, 390, 120, 24);
             form.Controls.Add(portBox);
 
-            form.Controls.Add(NewLabel(L("githubRepositoryURL"), 24, 382, 150));
+            form.Controls.Add(NewLabel(L("githubRepositoryURL"), 24, 434, 150));
             var repoBox = new TextBox();
             repoBox.Text = githubRepoUrl ?? string.Empty;
-            repoBox.SetBounds(180, 378, 342, 24);
+            repoBox.SetBounds(180, 430, 342, 24);
             form.Controls.Add(repoBox);
 
-            var copyConnector = NewButton(L("copyConnector"), 24, 426, 156);
+            var copyConnector = NewButton(L("copyConnector"), 24, 478, 156);
             copyConnector.Click += delegate { CopyMcpUrl(); };
             form.Controls.Add(copyConnector);
 
-            var copyOwner = NewButton(L("copyOwnerToken"), 194, 426, 156);
+            var copyOwner = NewButton(L("copyOwnerToken"), 194, 478, 156);
             copyOwner.Enabled = !string.IsNullOrEmpty(ownerToken);
             copyOwner.Click += delegate { CopyOwnerToken(); };
             form.Controls.Add(copyOwner);
 
-            var generateOwner = NewButton(L("autoGenerateToken"), 364, 426, 158);
+            var generateOwner = NewButton(L("autoGenerateToken"), 364, 478, 158);
             generateOwner.Click += delegate { AutoGenerateOwnerToken(); };
             form.Controls.Add(generateOwner);
 
-            var localHealth = NewButton(L("openLocalHealth"), 24, 464, 156);
+            var localHealth = NewButton(L("openLocalHealth"), 24, 516, 156);
             localHealth.Click += delegate { OpenLocalHealth(); };
             form.Controls.Add(localHealth);
 
-            var publicHealth = NewButton(L("openPublicHealth"), 194, 464, 156);
+            var publicHealth = NewButton(L("openPublicHealth"), 194, 516, 156);
             publicHealth.Click += delegate { OpenPublicHealth(); };
             form.Controls.Add(publicHealth);
 
-            var logs = NewButton(L("showLogs"), 364, 464, 158);
+            var logs = NewButton(L("showLogs"), 364, 516, 158);
             logs.Click += delegate { ShowLogs(); };
             form.Controls.Add(logs);
 
-            var github = NewButton(L("openGithub"), 24, 502, 156);
+            var github = NewButton(L("openGithub"), 24, 554, 156);
             github.Click += delegate { OpenGithub(); };
             form.Controls.Add(github);
 
-            var checkUpdates = NewButton(L("checkUpdates"), 194, 502, 156);
+            var checkUpdates = NewButton(L("checkUpdates"), 194, 554, 156);
             checkUpdates.Click += delegate { CheckUpdates(true); };
             form.Controls.Add(checkUpdates);
 
-            var about = NewButton(L("about"), 364, 502, 158);
+            var about = NewButton(L("about"), 364, 554, 158);
             about.Click += delegate
             {
                 MessageBox.Show(form, "ChatGPT To Codex by ezBuilder\r\nCopyright 2026 ezBuilder. All rights reserved.", "ChatGPT To Codex", MessageBoxButtons.OK, MessageBoxIcon.Information);
             };
             form.Controls.Add(about);
 
-            var copyright = NewLabel("Copyright 2026 ezBuilder. All rights reserved.", 24, 560, 300);
+            var copyright = NewLabel("Copyright 2026 ezBuilder. All rights reserved.", 24, 612, 300);
             form.Controls.Add(copyright);
 
-            var cancel = NewButton(L("cancel"), 356, 554, 78);
+            var cancel = NewButton(L("cancel"), 356, 606, 78);
             cancel.DialogResult = DialogResult.Cancel;
             form.Controls.Add(cancel);
 
-            var save = NewButton(L("save"), 444, 554, 78);
+            var save = NewButton(L("save"), 444, 606, 78);
             save.DialogResult = DialogResult.OK;
             form.AcceptButton = save;
             form.CancelButton = cancel;
@@ -907,6 +931,7 @@ internal sealed class LauncherForm : Form
             if (form.ShowDialog(this) != DialogResult.OK) return;
 
             var wasRunning = IsManagedProcessRunning();
+            displayName = string.IsNullOrWhiteSpace(displayNameBox.Text) ? ResolveConfiguredDisplayName() : displayNameBox.Text.Trim();
             selectedProjectPath = string.IsNullOrWhiteSpace(projectBox.Text) ? null : Path.GetFullPath(projectBox.Text);
             launchAtStartup = launchCheck.Checked;
             startMcpOnOpen = startCheck.Checked;
@@ -1291,6 +1316,7 @@ internal sealed class LauncherForm : Form
         {
             process.StartInfo.EnvironmentVariables["CHATGPT2CODEX_ROTATE_OWNER_TOKEN"] = "1";
         }
+        process.StartInfo.EnvironmentVariables["CHATGPT2CODEX_DISPLAY_NAME"] = displayName ?? "ChatGPT To Codex";
         if (!string.IsNullOrEmpty(selectedProjectPath) && HasProjectMarker(selectedProjectPath))
         {
             process.StartInfo.EnvironmentVariables["CHATGPT2CODEX_ACTIVE_PROJECT_ROOT"] = selectedProjectPath;

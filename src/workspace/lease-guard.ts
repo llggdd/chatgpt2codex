@@ -27,7 +27,7 @@ export async function requireProjectLease(
   projectId: string,
   capability: LeaseCapability = "read",
 ): Promise<Lease> {
-  const session = await ctx.store.getSession();
+  const session = await (ctx.sessionStore?.getSession() ?? ctx.store.getSession());
   const lease = requireLease(session, projectId);
   if (!ALLOWED_CAPABILITIES[lease.preset].has(capability)) {
     throw new DomainError(ErrorCode.PERMISSION_DENIED, `Lease preset ${lease.preset} does not allow ${capability}`, {

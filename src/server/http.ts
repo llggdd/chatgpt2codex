@@ -15,6 +15,7 @@ import { createServer as createMcpServer } from "./mcp-server.js";
 import { SingleUserOAuthProvider, type OAuthConfig } from "../auth/oauth-provider.js";
 import { verifyOwnerToken } from "../auth/owner-token.js";
 import { registerActionRoutes } from "./actions.js";
+import { actionBridgeName, fallbackDeviceIdentity, mcpResourceName, mcpServerName } from "../identity/device.js";
 
 /**
  * HTTP + OAuth 2.1 transport gateway (PRD §4 Transport Gateway, §5 CLI,
@@ -73,6 +74,8 @@ export function defaultHttpServerConfig(overrides: Partial<HttpServerConfig> = {
 interface TrackedSession {
   transport: StreamableHTTPServerTransport;
   lastActiveAtMs: number;
+  /** Key for the in-memory active-project/lease state owned by this client. */
+  sessionStateKey: string;
 }
 
 function sendJsonRpcError(res: Response, status: number, code: number, message: string): void {
@@ -168,6 +171,10 @@ export interface RunningHttpServer {
 }
 
 export function createHttpServer(ctx: ToolContext, config: HttpServerConfig): RunningHttpServer {
+  const identity = ctx.identity ?? fallbackDeviceIdentity();
+  // Keep all surfaces (MCP, Actions, and health) on the same identity even
+  // when an embedder constructs a context without the optional field.
+  const serverContext: ToolContext = ctx.identity ? ctx : { ...ctx, identity };
   const publicUrl = new URL(config.publicUrl);
   const mcpUrl = new URL("/mcp", publicUrl);
   const resourceServerUrl = resourceUrlFromServerUrl(mcpUrl);
@@ -240,7 +247,7 @@ export function createHttpServer(ctx: ToolContext, config: HttpServerConfig): Ru
       baseUrl: publicUrl,
       resourceServerUrl,
       scopesSupported: config.oauth.scopes,
-      resourceName: "chatgpt2codex",
+      resourceName: mcpResourceName(identity),
     }),
   );
 
@@ -256,7 +263,15 @@ export function createHttpServer(ctx: ToolContext, config: HttpServerConfig): Ru
   });
 
   app.get("/healthz", (_req, res) => {
-    res.json({ ok: true, name: "chatgpt2codex" });
+    res.json({
+      ok: true,
+      name: "chatgpt2codex",
+      serverName: mcpServerName(identity),
+      actionBridgeName: actionBridgeName(identity),
+      instanceId: identity.instanceId,
+      instanceName: identity.displayName,
+      platform: process.platform,
+    });
   });
 
   app.get("/privacy", (_req, res) => {
@@ -274,13 +289,14 @@ export function createHttpServer(ctx: ToolContext, config: HttpServerConfig): Ru
       );
   });
 
-  registerActionRoutes(app, ctx, publicUrl);
+  registerActionRoutes(app, serverContext, publicUrl);
 
   // Per-session transport map with TTL + hard cap (NFR-03/SR-09): every
   // initialize request creates one transport, keyed by MCP session id.
   // Idle sessions are swept on a timer; the map never grows unbounded even
   // under a client that never sends a clean close.
   const sessions = new Map<string, TrackedSession>();
+  const remoteSessionStates = new Map<string, { state: unknown }>();
   let lastSessionActivityAtMs = Date.now();
   let idleShutdownQueued = false;
 
@@ -294,7 +310,9 @@ export function createHttpServer(ctx: ToolContext, config: HttpServerConfig): Ru
       }
     }
     if (oldestId) {
-      sessions.get(oldestId)?.transport.close();
+      const oldest = sessions.get(oldestId);
+      oldest?.transport.close();
+      if (oldest) remoteSessionStates.delete(oldest.sessionStateKey);
       sessions.delete(oldestId);
     }
   }
@@ -304,6 +322,7 @@ export function createHttpServer(ctx: ToolContext, config: HttpServerConfig): Ru
     for (const [id, session] of sessions) {
       if (now - session.lastActiveAtMs > config.sessionTtlMs) {
         session.transport.close();
+        remoteSessionStates.delete(session.sessionStateKey);
         sessions.delete(id);
       }
     }
@@ -355,12 +374,21 @@ export function createHttpServer(ctx: ToolContext, config: HttpServerConfig): Ru
       } else if (initializeRequest) {
         if (sessions.size >= config.maxSessions) evictOldestSession();
 
+        // Keep active project + lease state per network connection. The
+        // persistent sessions.json remains the local CLI/Actions state, while
+        // simultaneous ChatGPT MCP clients no longer overwrite one another.
+        const sessionStateKey = randomUUID();
+        const remoteSessionState: { state: unknown } = {
+          state: { activeProjectId: null, mode: "observe", lease: null },
+        };
+        remoteSessionStates.set(sessionStateKey, remoteSessionState);
+
         transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
           onsessioninitialized: (newSessionId) => {
             if (transport) {
               lastSessionActivityAtMs = Date.now();
-              sessions.set(newSessionId, { transport, lastActiveAtMs: lastSessionActivityAtMs });
+              sessions.set(newSessionId, { transport, lastActiveAtMs: lastSessionActivityAtMs, sessionStateKey });
             }
           },
         });
@@ -368,6 +396,7 @@ export function createHttpServer(ctx: ToolContext, config: HttpServerConfig): Ru
         transport.onclose = () => {
           const closedSessionId = transport?.sessionId;
           if (closedSessionId) sessions.delete(closedSessionId);
+          remoteSessionStates.delete(sessionStateKey);
         };
 
         // Mark this session remote: it's how ChatGPT (and any other network
@@ -375,8 +404,22 @@ export function createHttpServer(ctx: ToolContext, config: HttpServerConfig): Ru
         // refused here even when the desktop-control tools are exposed to
         // ChatGPT (see src/server/tools.ts project_select handler /
         // isControlChatGptExposed) — lease arming stays local-only (stdio).
-        const mcpServer = await createMcpServer({ ...ctx, remote: true });
-        await mcpServer.connect(transport);
+        try {
+          const mcpServer = await createMcpServer({
+            ...serverContext,
+            remote: true,
+            sessionStore: {
+              getSession: async () => remoteSessionState.state,
+              setSession: async (state) => {
+                remoteSessionState.state = state;
+              },
+            },
+          });
+          await mcpServer.connect(transport);
+        } catch (error) {
+          remoteSessionStates.delete(sessionStateKey);
+          throw error;
+        }
       } else {
         sendJsonRpcError(res, 400, -32000, "No valid MCP session");
         return;
@@ -400,6 +443,7 @@ export function createHttpServer(ctx: ToolContext, config: HttpServerConfig): Ru
       clearInterval(sweepInterval);
       for (const session of sessions.values()) session.transport.close();
       sessions.clear();
+      remoteSessionStates.clear();
       oauthProvider.close();
     },
   };

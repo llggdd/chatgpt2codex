@@ -2,11 +2,12 @@
 /**
  * chatgpt2codex CLI entrypoint.
  *
- * Minimal hand-rolled argv parsing (no commander dependency) for the three
- * MVP subcommands defined in PRD §5:
+ * Minimal hand-rolled argv parsing (no commander dependency) for the CLI
+ * subcommands defined in PRD §5 and the local runtime extensions:
  *
  *   chatgpt2codex serve  --workspace <path>
  *   chatgpt2codex init   --workspace <path>
+ *   chatgpt2codex device [--set-name <name>]
  *   chatgpt2codex doctor
  */
 
@@ -31,6 +32,7 @@ import { startExecutor } from "./control/executor.js";
 import { approveAction, isKilled, listActions, rejectAction, setKill, toSummary } from "./control/queue.js";
 import { preflightPermissions } from "./control/mac-input.js";
 import { clampMinutes, clearAuto, readAuto, setAuto, type AutoActionKind } from "./control/auto.js";
+import { ensureDeviceIdentity, requireDisplayName } from "./identity/device.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -82,6 +84,10 @@ function defaultConfig(workspaceRoot: string, stateDir: string): Config {
 async function buildToolContext(workspace: string): Promise<ToolContext> {
   const workspaceRoot = path.resolve(workspace);
   const stateDir = defaultStateDir();
+  const identity = await ensureDeviceIdentity(stateDir, {
+    instanceId: process.env.CHATGPT2CODEX_INSTANCE_ID,
+    displayName: process.env.CHATGPT2CODEX_DISPLAY_NAME,
+  });
 
   const store = new Store(stateDir);
   const ledger = new Ledger(stateDir);
@@ -94,6 +100,7 @@ async function buildToolContext(workspace: string): Promise<ToolContext> {
   return {
     workspaceRoot,
     stateDir,
+    identity,
     registry,
     ledger: { append: (event) => ledger.append(event) },
     store: {
@@ -225,6 +232,7 @@ async function cmdServeHttp(flags: Record<string, string | boolean>): Promise<vo
   httpServer = app.listen(port, host, () => {
     console.error(`chatgpt2codex serve --http: listening on http://${host}:${port}/mcp`);
     console.error(`chatgpt2codex serve --http: public URL ${publicUrl}/mcp`);
+    console.error(`chatgpt2codex serve --http: instance=${ctx.identity?.displayName ?? "ChatGPT To Codex"} (${ctx.identity?.instanceId ?? "unconfigured"})`);
     console.error(`chatgpt2codex serve --http: workspace=${ctx.workspaceRoot}`);
     if (idleShutdownMs !== undefined) {
       console.error(`chatgpt2codex serve --http: idle shutdown after ${idleShutdownMinutes} minute(s) without sessions`);
@@ -254,6 +262,10 @@ async function cmdInit(flags: Record<string, string | boolean>): Promise<void> {
   const workspace = typeof flags.workspace === "string" ? flags.workspace : process.cwd();
   const workspaceRoot = path.resolve(workspace);
   const stateDir = defaultStateDir();
+  const identity = await ensureDeviceIdentity(stateDir, {
+    instanceId: process.env.CHATGPT2CODEX_INSTANCE_ID,
+    displayName: process.env.CHATGPT2CODEX_DISPLAY_NAME,
+  });
 
   const store = new Store(stateDir);
   const ledger = new Ledger(stateDir);
@@ -266,6 +278,7 @@ async function cmdInit(flags: Record<string, string | boolean>): Promise<void> {
   console.error(
     `chatgpt2codex init: initialized state dir ${stateDir} with ${registry.length} project(s) from ${workspaceRoot}`,
   );
+  console.error(`chatgpt2codex init: MCP instance ${identity.displayName} (${identity.instanceId})`);
 
   // PRD §11 SR-04: owner secret lives only as a hash on disk; the plaintext
   // is generated here and shown to the operator exactly once. Re-running
@@ -287,6 +300,22 @@ async function cmdInit(flags: Record<string, string | boolean>): Promise<void> {
       "Store this securely (e.g. a password manager). It is required to approve the OAuth /authorize prompt when a ChatGPT/MCP client connects over `chatgpt2codex serve --http`.",
     );
   }
+}
+
+/** Show or update the stable per-install MCP identity. */
+async function cmdDevice(flags: Record<string, string | boolean>): Promise<void> {
+  const stateDir = defaultStateDir();
+  const requestedName = typeof flags["set-name"] === "string" ? flags["set-name"] : undefined;
+  if (flags["set-name"] !== undefined && requestedName === undefined) {
+    console.error("usage: chatgpt2codex device [--status] [--set-name <name>]");
+    process.exitCode = 1;
+    return;
+  }
+  const identity = await ensureDeviceIdentity(stateDir, {
+    instanceId: process.env.CHATGPT2CODEX_INSTANCE_ID,
+    displayName: requestedName === undefined ? process.env.CHATGPT2CODEX_DISPLAY_NAME : requireDisplayName(requestedName),
+  });
+  console.log(JSON.stringify({ ...identity, stateDir }, null, 2));
 }
 
 async function readStdin(): Promise<string> {
@@ -553,6 +582,8 @@ async function cmdDoctor(): Promise<void> {
   console.log(`git: ${gitVersion ?? "not found"}`);
   console.log(`workspace: ${workspacePath}`);
   console.log(`state dir: ${stateDir}`);
+  const identity = await ensureDeviceIdentity(stateDir);
+  console.log(`mcp instance: ${identity.displayName} (${identity.instanceId})`);
   console.log(`registered tools: ${toolCount}`);
   console.log(
     `http/oauth: owner token ${ownerTokenReady ? "configured" : "NOT SET — run `chatgpt2codex init` to generate one"}`,
@@ -580,6 +611,9 @@ async function main(): Promise<void> {
     case "doctor":
       await cmdDoctor();
       break;
+    case "device":
+      await cmdDevice(flags);
+      break;
     case "owner-token":
       await cmdOwnerToken(flags);
       break;
@@ -588,7 +622,7 @@ async function main(): Promise<void> {
       break;
     default:
       console.error(
-        "usage: chatgpt2codex <serve|init|doctor|owner-token|control> [--workspace <path>] [--active-project-root <path>] [--stdio | --http [--port 7979] [--public-url <origin>]]",
+        "usage: chatgpt2codex <serve|init|device|doctor|owner-token|control> [--workspace <path>] [--active-project-root <path>] [--stdio | --http [--port 7979] [--public-url <origin>]]",
       );
       process.exitCode = 1;
   }

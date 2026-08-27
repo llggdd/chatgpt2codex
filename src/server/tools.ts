@@ -30,6 +30,7 @@ import { listCommands, runCommand } from "../exec/command-runner.js";
 import { runLocalShell } from "../exec/local-shell.js";
 import { createE2eScreenshotShare } from "../e2e/screenshot-share.js";
 import { addToolCallProof, TOOL_AVAILABILITY_GATE } from "./tool-proof.js";
+import { fallbackDeviceIdentity, mcpServerName, mcpResourceName } from "../identity/device.js";
 import {
   captureE2eAppScreenshot,
   captureE2eAppScreenshotSet,
@@ -76,7 +77,7 @@ function emptySession(): SessionState {
 }
 
 async function loadSession(ctx: ToolContext): Promise<SessionState> {
-  const raw = await ctx.store.getSession();
+  const raw = await (ctx.sessionStore?.getSession() ?? ctx.store.getSession());
   if (!raw || typeof raw !== "object") return emptySession();
   const s = raw as Partial<SessionState>;
   return {
@@ -87,7 +88,7 @@ async function loadSession(ctx: ToolContext): Promise<SessionState> {
 }
 
 async function saveSession(ctx: ToolContext, session: SessionState): Promise<void> {
-  await ctx.store.setSession(session);
+  await (ctx.sessionStore?.setSession(session) ?? ctx.store.setSession(session));
 }
 
 // ---------------------------------------------------------------------------
@@ -275,10 +276,14 @@ function installChatGptToolListHandler(s: McpServer): void {
  * wire shape expected by `registerTool` callbacks (plain object + index
  * signature, rather than our narrower interface type).
  */
-function toCallToolResult(toolName: string, result: ToolResult<Record<string, unknown>>): CallToolResultLike {
+function toCallToolResult(
+  toolName: string,
+  result: ToolResult<Record<string, unknown>>,
+  ctx?: ToolContext,
+): CallToolResultLike {
   return {
     content: result.content,
-    structuredContent: addToolCallProof(result.structuredContent, toolName, result.isError !== true),
+    structuredContent: addToolCallProof(result.structuredContent, toolName, result.isError !== true, ctx?.identity),
     ...(result.isError ? { isError: true } : {}),
     ...(result._meta ? { _meta: result._meta } : {}),
   };
@@ -298,7 +303,7 @@ async function withErrorMapping<T extends Record<string, unknown>>(
       input: redactUnknown(input),
       isError: result.isError ?? false,
     });
-    return toCallToolResult(toolName, result);
+    return toCallToolResult(toolName, result, ctx);
   } catch (err) {
     const mapped = mapError(err);
     await ctx.ledger.append({
@@ -308,7 +313,7 @@ async function withErrorMapping<T extends Record<string, unknown>>(
       code: mapped.structuredContent.code,
       error: mapped.structuredContent.error,
     });
-    return toCallToolResult(toolName, mapped);
+    return toCallToolResult(toolName, mapped, ctx);
   }
 }
 
@@ -770,6 +775,7 @@ async function guardSecretPath(ctx: ToolContext, absPath: string, toolName: stri
  */
 export function registerTools(server: unknown, ctx: ToolContext): void {
   const s = server as McpServer;
+  const identity = ctx.identity ?? fallbackDeviceIdentity();
   const rawRegisterTool = s.registerTool.bind(s);
   const registerTool = ((name: string, config: Record<string, unknown>, handler: unknown) =>
     rawRegisterTool(
@@ -812,6 +818,32 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
   // -------------------------------------------------------------------
 
   registerTool(
+    "device_identity",
+    {
+      title: "Identify this ChatGPT To Codex instance",
+      description:
+        "Returns the stable identity of the local ChatGPT To Codex runtime. Use this first when more than one computer or MCP registration is connected, so the model can confirm which installation it is about to operate.",
+      annotations: READ_ONLY_ANNOTATIONS,
+      _meta: chatGptToolMeta("Checking connected instance...", "Connected instance identified"),
+      inputSchema: {},
+    },
+    async (input) =>
+      withErrorMapping(ctx, "device_identity", input, async () =>
+        makeResult(
+          {
+            instanceId: identity.instanceId,
+            instanceName: identity.displayName,
+            serverName: mcpServerName(identity),
+            resourceName: mcpResourceName(identity),
+            platform: process.platform,
+            workspaceRoot: ctx.workspaceRoot,
+          },
+          `${identity.displayName} (${mcpServerName(identity)}) is connected.`,
+        ),
+      ),
+  );
+
+  registerTool(
     "agent_guide",
     {
       title: "Get chatgpt2codex agent guide",
@@ -825,6 +857,12 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
       return withErrorMapping(ctx, "agent_guide", input, async () =>
         makeResult(
           {
+            deviceIdentity: {
+              instanceId: identity.instanceId,
+              instanceName: identity.displayName,
+              serverName: mcpServerName(identity),
+              resourceName: mcpResourceName(identity),
+            },
             toolAvailabilityGate: TOOL_AVAILABILITY_GATE,
             codexGradeLoop: [
               "Discover: project_status, project_rules, repo_diff_summary, and narrow code_search before choosing a change.",
@@ -834,7 +872,7 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
               "Report: include changed files, verification command/output, proof artifact, and remaining risk without claiming unstaged work is committed.",
             ],
             toolSurfaceMap: {
-              discover: ["workspace_list_projects", "workspace_refresh_index", "workspace_get_project", "project_select"],
+              discover: ["device_identity", "workspace_list_projects", "workspace_refresh_index", "workspace_get_project", "project_select"],
               inspect: ["project_rules", "project_status", "repo_status", "repo_diff_summary", "code_search", "file_read_slice"],
               modify: ["file_apply_patch", "file_create", "local_shell_run"],
               verify: ["command_list", "local_shell_run", "e2e_test_and_show_screenshot", "e2e_start_server", "e2e_run_command", "e2e_screenshot"],
@@ -860,6 +898,7 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
               "If ChatGPT's app selector changed to Image Generation/ImageGen, finish generation there, then reselect ChatGPT To Codex or use the Custom GPT Action bridge before doing source work.",
               "For /goal, deep research, or broad implementation prompts: call goal_loop or goal_intake immediately, then continue with project selection and inspection. Do not spend a long thinking turn before the first tool call.",
               "For Codex-style persistence: use goal_loop, perform one small inspect/edit/verify batch, then call goal_loop again with lastResult. Repeat until done or truly blocked.",
+              "When multiple computers or MCP registrations are connected, call device_identity first and verify instanceName/serverName before selecting a project or editing.",
               "workspace_list_projects or workspace_refresh_index",
               "project_select with preset=full-write for edits",
               "project_rules, project_status, code_search",
@@ -878,6 +917,8 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
             ],
             capabilities: {
               workspaceRoot: ctx.workspaceRoot,
+              concurrency:
+                "Each remote MCP connection keeps an isolated active project and lease, so simultaneous ChatGPT tasks do not overwrite one another's selection. File patches still use hashes and should be verified independently.",
               fileEdits: "project-confined patch/create with secret-path blocking",
               shell: "project-confined local shell with redacted output and secret/OS-destructive guards",
               e2e:
@@ -1111,6 +1152,7 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
             ],
             customGptActionOperations: [
               "agent_guide",
+              "device_identity",
               "project_select",
               "save_chatgpt_image",
               "save_chatgpt_image_from_url",

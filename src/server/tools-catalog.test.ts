@@ -187,6 +187,23 @@ describe("tool catalog", () => {
     expect(result.structuredContent?.desktopControlModel?.join(" ")).toContain("sensitive apps");
   });
 
+  it("exposes a device identity proof for multi-computer registrations", async () => {
+    const server = await createServer(makeCtx());
+    const tools = (
+      server as unknown as {
+        _registeredTools?: Record<string, { handler?: (input: unknown) => Promise<unknown> }>;
+      }
+    )._registeredTools;
+    const result = (await tools?.device_identity?.handler?.({})) as {
+      structuredContent?: Record<string, unknown> & {
+        chatgpt2codexToolCall?: Record<string, unknown>;
+      };
+    };
+    expect(result.structuredContent?.instanceId).toMatch(/^inst_[A-Za-z0-9-]{16,}$/u);
+    expect(result.structuredContent?.serverName).toMatch(/^chatgpt2codex-/u);
+    expect(result.structuredContent?.chatgpt2codexToolCall?.ok).toBe(true);
+  });
+
   describe("ChatGPT confirm-model exposure (CHATGPT2CODEX_CONTROL_CHATGPT)", () => {
     afterEach(() => {
       delete process.env.CHATGPT2CODEX_CONTROL_CHATGPT;
