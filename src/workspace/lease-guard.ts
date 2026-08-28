@@ -17,6 +17,24 @@ const ALLOWED_CAPABILITIES: Record<LeasePreset, ReadonlySet<LeaseCapability>> = 
   control: new Set(["read", "control"]),
 };
 
+function sessionHasLease(session: unknown): boolean {
+  if (typeof session !== "object" || session === null) return false;
+  const candidate = session as { lease?: unknown; activeLease?: unknown };
+  return candidate.lease !== undefined && candidate.lease !== null
+    ? true
+    : candidate.activeLease !== undefined && candidate.activeLease !== null;
+}
+
+function assertLeaseCapability(lease: Lease, projectId: string, capability: LeaseCapability): void {
+  if (!ALLOWED_CAPABILITIES[lease.preset].has(capability)) {
+    throw new DomainError(ErrorCode.PERMISSION_DENIED, `Lease preset ${lease.preset} does not allow ${capability}`, {
+      projectId,
+      preset: lease.preset,
+      capability,
+    });
+  }
+}
+
 /**
  * Require an unexpired lease for `projectId` that permits `capability`.
  * Throws LEASE_REQUIRED (no/expired/mismatched lease) or PERMISSION_DENIED
@@ -28,13 +46,23 @@ export async function requireProjectLease(
   capability: LeaseCapability = "read",
 ): Promise<Lease> {
   const session = await (ctx.sessionStore?.getSession() ?? ctx.store.getSession());
-  const lease = requireLease(session, projectId);
-  if (!ALLOWED_CAPABILITIES[lease.preset].has(capability)) {
-    throw new DomainError(ErrorCode.PERMISSION_DENIED, `Lease preset ${lease.preset} does not allow ${capability}`, {
-      projectId,
-      preset: lease.preset,
-      capability,
-    });
+  let lease: Lease;
+  try {
+    lease = requireLease(session, projectId);
+  } catch (error) {
+    // A normal MCP session must remain isolated: never borrow another
+    // project's lease when this session already has one (even if it is
+    // expired). The fallback is only for legacy remote clients whose next
+    // request arrived on a fresh, empty connection.
+    if (!ctx.remoteLeaseLookup || sessionHasLease(session)) throw error;
+    const handoff = await ctx.remoteLeaseLookup(projectId);
+    if (!handoff) throw error;
+    try {
+      lease = requireLease({ lease: handoff }, projectId);
+    } catch {
+      throw error;
+    }
   }
+  assertLeaseCapability(lease, projectId, capability);
   return lease;
 }

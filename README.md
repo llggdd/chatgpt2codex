@@ -176,6 +176,11 @@ file is touched. Refresh or reconnect the `code-x` registration after an
 upgrade so it loads the current tool schema.
 Separate remote MCP connections also keep their active project/lease state
 separate, so simultaneous tasks do not switch each other's selected project.
+If an older `code-x` client recreates the HTTP connection for every tool call,
+the gateway keeps the live lease as a short-lived, OAuth-client-bound handoff;
+after `project_select`, pass the same explicit `projectId` to the next command
+or edit. This compatibility handoff expires with the lease and is not a global
+or persistent session.
 After changing a name, refresh or reconnect the ChatGPT app if it has cached
 the previous MCP metadata; the connector URL still must point to that machine.
 This isolation is per remote MCP connection; workflows sharing one connection

@@ -1170,7 +1170,7 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
             capabilities: {
               workspaceRoot: ctx.workspaceRoot,
               concurrency:
-                "Each remote MCP connection keeps an isolated active project, lease, loop, and task visibility. Background tasks add a bounded concurrency pool and per-project read/write locks; use task_status/task_result for progress and include targetInstanceId on mutations.",
+              "Each remote MCP connection keeps an isolated active project, lease, loop, and task visibility. Legacy clients that recreate the connection can use the short-lived lease handoff by passing the explicit projectId returned by project_select. Background tasks add a bounded concurrency pool and per-project read/write locks; use task_status/task_result for progress and include targetInstanceId on mutations.",
               fileEdits: "project-confined patch/create with secret-path blocking",
               shell: "project-confined local shell with redacted output and secret/OS-destructive guards",
               e2e:

@@ -108,6 +108,13 @@ export interface ToolContext {
     getSession(): Promise<unknown>;
     setSession(s: unknown): Promise<void>;
   };
+  /**
+   * Compatibility lookup for remote clients that reconnect for every tool
+   * call instead of carrying the MCP session id. The HTTP gateway supplies a
+   * short-lived, client-bound lease snapshot; local/stdio callers leave this
+   * unset so their normal session isolation remains strict.
+   */
+  remoteLeaseLookup?: (projectId: string) => Promise<Lease | null>;
   /** Stable identifier for the transport/client session, when available. */
   sessionId?: string;
   /** Optional task context used when a tool is executing inside a task. */
