@@ -858,17 +858,17 @@ describe("Custom GPT action bridge", () => {
       const server = await startApp(makeCtx(stateDir, projectRoot));
       stop = server.stop;
 
-      // A real control lease isn't granted through this bridge (preset=control
-      // stays blocked below), so this reaches the tool handler and fails on
-      // the lease check itself — proof it's no longer blocked by
-      // CONTROL_TOOL_NAMES specifically.
+      // A control lease/grant isn't granted through this bridge
+      // (preset=control stays blocked below), so this reaches the tool
+      // handler and fails on the local-grant check itself — proof it's no
+      // longer blocked by CONTROL_TOOL_NAMES specifically.
       const res = await postAction(server.baseUrl, "/actions/call-tool", {
         toolName: "computer_action_status",
         input: {},
       });
       const body = (await res.json()) as { ok: boolean; structuredContent?: { code?: string } };
       expect(body.ok).toBe(false);
-      expect(body.structuredContent?.code).toBe("PROJECT_NOT_SELECTED");
+      expect(body.structuredContent?.code).toBe("LEASE_REQUIRED");
 
       const bridgeRes = await postAction(server.baseUrl, "/actions/call-tool", {
         toolName: "project_select",

@@ -49,7 +49,7 @@ const SessionSchema = z.object({
       projectId: z.string(),
       leaseId: z.string(),
       projectRoot: z.string(),
-      preset: z.enum(["read-only", "tests-only", "full-write", "image-only"]),
+      preset: z.enum(["read-only", "tests-only", "full-write", "image-only", "control"]),
       issuedAt: z.number().int().nonnegative(),
       expiresAt: z.number().int().nonnegative(),
     })

@@ -72,6 +72,27 @@ macOS 권한이 필요할 수 있습니다.
 
 Windows에서는 브라우저 또는 앱 창 캡처 권한 경고가 뜨면 허용하세요. 캡처가 비어 있으면 앱을 관리자 권한 없이 일반 실행으로 다시 켜고, 캡처 대상 창이 실제 화면에 보이는지 확인하세요.
 
+### macOS Computer Use 사용
+
+코딩 도구만이 아니라 Safari, TextEdit 같은 로컬 앱을 단계적으로 조작하려면 메뉴 막대의 **Settings...**에서 **ChatGPT의 제한형 Computer Use 허용**을 켭니다. 허용 앱, 권한 유효시간(1~60분), 최대 동작 수(1~100)를 입력하고 저장하면 현재 선택한 프로젝트와 이 컴퓨터에만 유효한 Control Grant가 로컬에서 발급됩니다.
+
+- ChatGPT나 원격 MCP는 이 권한을 직접 발급하거나 범위를 늘릴 수 없습니다.
+- 각 클릭·입력·키 동작은 `computer_request_action`으로 한 번씩 명시됩니다.
+- `computer_task_execute`는 화면 관찰, 동작 후 재확인, 동일 화면 반복 감지, 최대 단계 제한을 보존합니다.
+- 설정을 끄거나 Kill Control을 누르거나, 시간이 만료되거나, 동작 수를 모두 쓰면 권한이 회수됩니다.
+- 최초 설정 후에는 대기 중인 제어 작업 메뉴에서 남은 시간·사용량을 확인하고 권한을 바로 재발급하거나 회수할 수 있습니다.
+- 암호 관리자, Terminal, 시스템 설정, 금융·2FA 앱은 허용 목록에 적어도 차단됩니다.
+
+터미널에서는 같은 권한을 다음처럼 관리할 수 있습니다.
+
+```bash
+CHATGPT2CODEX_CONTROL_ALLOWLIST="Safari,TextEdit" \
+  chatgpt2codex control grant on --project-root /path/to/project \
+  --apps "Safari,TextEdit" --minutes 10 --max 20
+chatgpt2codex control grant status
+chatgpt2codex control grant off
+```
+
 ### 주의
 
 - Owner Token은 비밀번호처럼 다루세요.
@@ -178,6 +199,19 @@ Use ChatGPT To Codex to run E2E, open the app, capture screenshots, and show the
 ```
 
 macOS may ask for Screen Recording and Accessibility permissions. Enable them in **System Settings** -> **Privacy & Security**.
+
+### macOS Computer Use
+
+To let ChatGPT operate an allowlisted local app through a bounded workflow,
+open **Settings...**, enable **Allow bounded Computer Use from ChatGPT**, enter
+the allowed app names, and set a 1–60 minute lifetime and 1–100 action budget.
+Saving creates a local Control Grant scoped to this instance and the selected
+project. Remote MCP calls cannot issue or widen it. `computer_task_execute`
+persists the observe/action/verify loop; every action is still an explicit
+`computer_request_action`. Disable the setting, use Kill Control, or run
+`chatgpt2codex control grant off` to revoke it immediately. After initial
+setup, the pending-control submenu also shows remaining time and usage and can
+reissue or revoke the grant directly.
 
 On Windows, allow the browser or app window to be visible while capturing. If a screenshot is blank, restart ChatGPT To Codex normally, keep the target window on screen, and retry.
 

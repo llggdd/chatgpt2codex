@@ -59,6 +59,7 @@ import {
   handleComputerKillSwitch,
   handleComputerRequestAction,
   handleComputerScreenshot,
+  handleComputerTaskExecute,
 } from "../control/tools.js";
 import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
@@ -3729,7 +3730,7 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
 
   // -------------------------------------------------------------------
   // Human-confirmed desktop control (registered only when the install-time
-  // CHATGPT2CODEX_CONTROL feature flag is on). These 4 tools are additionally
+  // CHATGPT2CODEX_CONTROL feature flag is on). These tools are additionally
   // hidden from CHATGPT_TO_CODEX's tools/list (installChatGptToolListHandler
   // below) and blocked on the generic call-tool bridge
   // (src/server/actions.ts callRegisteredTool) via CONTROL_TOOL_NAMES unless
@@ -3765,7 +3766,7 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
       {
         title: "Capture a desktop screenshot (control)",
         description:
-          "Capture the full screen or a specific app window for human-in-the-loop desktop control. No synthetic input; requires an active control lease (project_select preset=control). When the owner has opted in via CHATGPT2CODEX_CONTROL_CHATGPT, this tool is visible to ChatGPT and its client-side Confirm/Deny prompt (from the non-read-only annotation below) is the approval gate before capture happens. Refuses to capture sensitive apps (password managers, Keychain Access, System Settings, banking/2FA apps).",
+          "Capture the full screen or a specific app window for human-in-the-loop desktop control. No synthetic input; requires a local control lease or a bounded Control Grant issued locally on the Mac. When the owner has opted in via CHATGPT2CODEX_CONTROL_CHATGPT, this tool is visible to ChatGPT and its client-side Confirm/Deny prompt (from the non-read-only annotation below) is the approval gate before capture happens. Refuses to capture sensitive apps (password managers, Keychain Access, System Settings, banking/2FA apps).",
         annotations: CONTROL_ANNOTATIONS,
         _meta: chatGptToolMeta("Capturing desktop screenshot...", "Desktop screenshot captured"),
         inputSchema: {
@@ -3782,7 +3783,7 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
       {
         title: "Request a desktop click/type/key action (control)",
         description:
-          "Request a click/type/key action. Requires an active control lease (project_select preset=control). By default (CHATGPT2CODEX_CONTROL_CHATGPT off, or this tool called outside ChatGPT) it never executes anything itself: it always returns status=pending, and only a local human approving it lets src/control/executor.ts perform the real synthetic input. When the owner has opted in via CHATGPT2CODEX_CONTROL_CHATGPT, this tool is visible to ChatGPT and its client-side Confirm/Deny prompt on the owner's phone (from the non-read-only/destructive annotation below) is the approval gate instead: a confirmed call executes immediately through that same executor path (kill-switch re-check, darwin preflight, a second live-frontmost sensitive-app/allowlist check, before/after evidence, audit — tagged approvedVia=chatgpt). Sensitive apps are always refused, confirmed or not.",
+          "Request one click/type/key action. Requires a local control lease or a bounded Control Grant issued locally on the Mac. By default (CHATGPT2CODEX_CONTROL_CHATGPT off, or this tool called outside ChatGPT) it returns status=pending, and only local approval lets the executor perform the synthetic input. When the owner opts in for ChatGPT exposure, the client's Confirm/Deny prompt gates immediate execution through the same kill-switch, live allowlist, evidence, and audit path. Sensitive apps are always refused.",
         annotations: CONTROL_ANNOTATIONS,
         inputSchema: {
           appName: z.string().min(1),
@@ -3791,6 +3792,7 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
           text: z.string().optional(),
           keyCode: z.number().int().min(0).optional(),
           reason: z.string().min(1),
+          taskId: z.string().regex(/^ctask_[0-9a-fA-F-]{36}$/).optional(),
         },
         _meta: chatGptToolMeta("Confirming desktop action...", "Desktop action executed"),
       },
@@ -3798,11 +3800,33 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
     );
 
     registerTool(
+      "computer_task_execute",
+      {
+        title: "Run or continue a bounded Computer Use task",
+        description:
+          "Start or continue a persistent observe-act-observe Computer Use loop for one allowlisted app. A new task requires goal+appName; subsequent calls use taskId. This tool captures the next app observation, detects repeated unchanged screens and step-limit stalls, and tells the caller to issue one explicit computer_request_action linked by taskId. It requires either a local control lease or a short-lived Control Grant issued locally on the Mac.",
+        annotations: CONTROL_ANNOTATIONS,
+        _meta: chatGptToolMeta("Observing Computer Use task...", "Computer Use observation ready"),
+        inputSchema: {
+          goal: z.string().min(1).max(4000).optional(),
+          taskId: z.string().regex(/^ctask_[0-9a-fA-F-]{36}$/).optional(),
+          appName: z.string().min(1).optional(),
+          maxSteps: z.number().int().min(1).max(50).optional(),
+          lastActionId: z.string().regex(/^ctl_[0-9a-fA-F-]{36}$/).optional(),
+          done: z.boolean().optional(),
+          cancel: z.boolean().optional(),
+          outcome: z.string().max(2000).optional(),
+        },
+      },
+      async (input) => handleComputerTaskExecute(ctx, input),
+    );
+
+    registerTool(
       "computer_action_status",
       {
         title: "Check desktop control action status (control)",
         description:
-          "Read-only status check for one queued action (by actionId) or the whole current-session queue: pending/approved/rejected/done, never a trigger to execute anything. Requires an active control lease.",
+          "Read-only status check for one queued action (by actionId) or the allowed grant scope: pending/approved/rejected/done, never a trigger to execute anything. Requires a local control lease or active local Control Grant.",
         annotations: READ_ONLY_ANNOTATIONS,
         _meta: chatGptToolMeta("Checking desktop control status...", "Desktop control status loaded"),
         inputSchema: {
@@ -3820,7 +3844,7 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
       {
         title: "Kill the desktop control session (control)",
         description:
-          "Immediately disable desktop control for this session: rejects every pending action and blocks new requests until a fresh control lease (project_select preset=control) is granted. Idempotent. Requires an active control lease. Available to ChatGPT (as a normal Confirm/Deny action) whenever the desktop-control tools are exposed, so the owner can kill an in-progress session from the same phone that confirmed it.",
+          "Immediately disable desktop control: rejects every pending action, revokes the local Control Grant, and blocks new requests until a fresh local lease or grant is issued. Idempotent. Available to ChatGPT whenever the desktop-control tools are exposed, so the owner can kill an in-progress session from the same client that confirmed it.",
         annotations: CONTROL_ANNOTATIONS,
         _meta: chatGptToolMeta("Killing desktop control session...", "Desktop control session killed"),
         inputSchema: {

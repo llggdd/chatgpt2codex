@@ -1,12 +1,22 @@
+import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import { DomainError, ErrorCode, makeResult, type ToolContext, type ToolResult } from "../types.js";
 import { requireProjectLease } from "../workspace/lease-guard.js";
 import { resolveActiveProject } from "../workspace/active.js";
 import { captureE2eAppScreenshot, captureE2eScreenshot } from "../e2e/local-e2e.js";
 import { redact } from "../policy/secrets.js";
+import { fallbackDeviceIdentity } from "../identity/device.js";
 import { assertAllowedTarget, controlAllowlist, isAppAllowed, isControlChatGptExposed } from "./policy.js";
 import { assertScreenshotTargetAllowed, maskSensitiveRegions } from "./screenshot-mask.js";
 import { executeApprovedAction } from "./executor.js";
+import { authorizeControlGrant, consumeControlGrant, type ControlGrant, type ControlGrantKind } from "./grant.js";
+import {
+  finishComputerTask,
+  getComputerTask,
+  linkComputerTaskAction,
+  recordComputerObservation,
+  startComputerTask,
+} from "./task.js";
 import * as macInput from "./mac-input.js";
 import {
   approveAction,
@@ -95,14 +105,56 @@ async function withControlErrorMapping<T extends Record<string, unknown>>(
   }
 }
 
-/** Both gates: an active project must hold a `control`-capable lease. */
-async function requireControlLease(ctx: ToolContext): Promise<{ projectId: string; root: string }> {
+interface ControlAccess {
+  projectId: string;
+  root: string;
+  source: "session-lease" | "local-grant";
+  grant?: ControlGrant;
+}
+
+/**
+ * A local stdio/status-bar session may use its normal control lease. Remote
+ * MCP/Actions sessions cannot self-grant that lease, so they may instead
+ * consume a short-lived, instance/project/app-scoped grant created locally
+ * on the Mac. The grant is never writable through MCP or HTTP.
+ */
+async function requireControlAccess(
+  ctx: ToolContext,
+  scope: { appName?: string; kind?: ControlGrantKind } = {},
+): Promise<ControlAccess> {
   const active = await resolveActiveProject(ctx);
-  if (!active) {
-    throw new DomainError(ErrorCode.PROJECT_NOT_SELECTED, "Select a project with project_select preset=control first");
+  let localLeaseError: unknown;
+  if (active) {
+    try {
+      await requireProjectLease(ctx, active.projectId, "control");
+      return { projectId: active.projectId, root: active.root, source: "session-lease" };
+    } catch (err) {
+      localLeaseError = err;
+      // A non-control/expired/mismatched session lease does not widen access;
+      // continue only if a separately local-issued grant validates below.
+    }
   }
-  await requireProjectLease(ctx, active.projectId, "control");
-  return { projectId: active.projectId, root: active.root };
+  const identity = ctx.identity ?? fallbackDeviceIdentity();
+  let grant: ControlGrant;
+  try {
+    grant = await authorizeControlGrant(ctx.stateDir, {
+      instanceId: identity.instanceId,
+      appName: scope.appName,
+      kind: scope.kind,
+    });
+  } catch (grantError) {
+    if (!ctx.remote) {
+      if (localLeaseError) throw localLeaseError;
+      throw new DomainError(ErrorCode.PROJECT_NOT_SELECTED, "Select a project with project_select preset=control first");
+    }
+    throw grantError;
+  }
+  const entries = ctx.registry.length > 0 ? ctx.registry : await ctx.store.loadProjects();
+  const entry = entries.find((candidate) => candidate.projectId === grant.projectId);
+  if (!entry) {
+    throw new DomainError(ErrorCode.PROJECT_NOT_FOUND, `Control Grant project not found: ${grant.projectId}`);
+  }
+  return { projectId: entry.projectId, root: entry.root, source: "local-grant", grant };
 }
 
 export interface ComputerScreenshotInput {
@@ -113,7 +165,10 @@ export interface ComputerScreenshotInput {
 
 export async function handleComputerScreenshot(ctx: ToolContext, input: ComputerScreenshotInput): Promise<CallToolResultLike> {
   return withControlErrorMapping(ctx, "computer_screenshot", input, async () => {
-    const { projectId, root } = await requireControlLease(ctx);
+    const { projectId, root, source, grant } = await requireControlAccess(ctx, {
+      appName: input.appName,
+      kind: "screenshot",
+    });
     // Full-screen capture (no appName) shows whatever is frontmost, so the
     // sensitive-app gate must check the *live* frontmost app in that case —
     // an app-targeted capture is already covered by the appName check below.
@@ -168,6 +223,8 @@ export async function handleComputerScreenshot(ctx: ToolContext, input: Computer
       projectId,
       appName: input.appName ?? "screen",
       masked: masked.masked,
+      authorization: source,
+      grantId: grant?.grantId,
     });
 
     const base64 = await fs.readFile(masked.pngPath).then((buf) => buf.toString("base64"));
@@ -188,6 +245,7 @@ export interface ComputerRequestActionInput {
   text?: string;
   keyCode?: number;
   reason: string;
+  taskId?: string;
 }
 
 // Defense in depth for the ChatGPT-exposed immediate-execution branch below:
@@ -219,7 +277,18 @@ async function isChatGptExposedRateLimited(stateDir: string, now = Date.now()): 
 export async function handleComputerRequestAction(ctx: ToolContext, input: ComputerRequestActionInput): Promise<CallToolResultLike> {
   const redactedInput = { ...input, text: input.text ? "[redacted]" : undefined };
   return withControlErrorMapping(ctx, "computer_request_action", redactedInput, async () => {
-    const { projectId } = await requireControlLease(ctx);
+    const access = await requireControlAccess(ctx, { appName: input.appName, kind: input.kind });
+    const { projectId } = access;
+    if (input.taskId) {
+      const task = await getComputerTask(ctx.stateDir, input.taskId);
+      const identity = ctx.identity ?? fallbackDeviceIdentity();
+      if (task.instanceId !== identity.instanceId || task.projectId !== projectId || task.appName !== input.appName) {
+        throw new DomainError(ErrorCode.PERMISSION_DENIED, "Computer action does not match its Computer Use task scope");
+      }
+      if (task.status !== "active") {
+        throw new DomainError(ErrorCode.COMMAND_NOT_ALLOWED, `Computer Use task is ${task.status}: ${task.taskId}`);
+      }
+    }
 
     if (await isKilled(ctx.stateDir)) {
       throw new DomainError(ErrorCode.CONTROL_KILLED, "Control session is killed; grant a new control lease to resume");
@@ -253,6 +322,23 @@ export async function handleComputerRequestAction(ctx: ToolContext, input: Compu
       }));
     }
 
+    if (access.source === "local-grant") {
+      const identity = ctx.identity ?? fallbackDeviceIdentity();
+      const consumed = await consumeControlGrant(ctx.stateDir, {
+        instanceId: identity.instanceId,
+        projectId,
+        appName: input.appName,
+        kind: input.kind,
+      });
+      await ctx.ledger.append({
+        type: "control.grant.consumed",
+        projectId,
+        grantId: consumed.grantId,
+        usedActions: consumed.usedActions,
+        maxActions: consumed.maxActions,
+      });
+    }
+
     const record = await enqueue(ctx.stateDir, {
       appName: input.appName,
       kind: input.kind,
@@ -262,6 +348,7 @@ export async function handleComputerRequestAction(ctx: ToolContext, input: Compu
       reason: input.reason,
       resolved,
     });
+    if (input.taskId) await linkComputerTaskAction(ctx.stateDir, input.taskId, record.actionId);
 
     await ctx.ledger.append({
       type: "control.action.requested",
@@ -272,6 +359,7 @@ export async function handleComputerRequestAction(ctx: ToolContext, input: Compu
       target: record.target,
       reason: record.reason,
       resolved: record.resolved,
+      computerTaskId: input.taskId,
     });
 
     if (isControlChatGptExposed() && !(await isChatGptExposedRateLimited(ctx.stateDir))) {
@@ -321,18 +409,155 @@ export async function handleComputerRequestAction(ctx: ToolContext, input: Compu
   });
 }
 
+export interface ComputerTaskExecuteInput {
+  goal?: string;
+  taskId?: string;
+  appName?: string;
+  maxSteps?: number;
+  lastActionId?: string;
+  done?: boolean;
+  cancel?: boolean;
+  outcome?: string;
+}
+
+/**
+ * Persistent observe -> act -> observe Computer Use loop. The caller model
+ * still chooses each action through computer_request_action; this tool owns
+ * scope, step budget, repeated-frame detection, evidence, and completion.
+ */
+export async function handleComputerTaskExecute(
+  ctx: ToolContext,
+  input: ComputerTaskExecuteInput,
+): Promise<CallToolResultLike> {
+  const safeInput = { ...input, goal: input.goal ? "[goal redacted]" : undefined, outcome: input.outcome ? "[outcome redacted]" : undefined };
+  return withControlErrorMapping(ctx, "computer_task_execute", safeInput, async () => {
+    const identity = ctx.identity ?? fallbackDeviceIdentity();
+    let task;
+    if (input.taskId) {
+      task = await getComputerTask(ctx.stateDir, input.taskId);
+      if (task.instanceId !== identity.instanceId) {
+        throw new DomainError(ErrorCode.TARGET_INSTANCE_MISMATCH, "Computer Use task belongs to another MCP instance");
+      }
+      if (input.appName && input.appName !== task.appName) {
+        throw new DomainError(ErrorCode.PERMISSION_DENIED, "appName does not match the existing Computer Use task");
+      }
+    } else {
+      const goal = input.goal?.trim();
+      const appName = input.appName?.trim();
+      if (!goal || !appName) {
+        throw new DomainError(ErrorCode.COMMAND_NOT_ALLOWED, "A new Computer Use task requires goal and appName");
+      }
+      const access = await requireControlAccess(ctx, { appName, kind: "screenshot" });
+      task = await startComputerTask(ctx.stateDir, {
+        instanceId: identity.instanceId,
+        projectId: access.projectId,
+        appName,
+        goalPreview: redact(goal).slice(0, 2000),
+        maxSteps: input.maxSteps,
+      });
+      await ctx.ledger.append({
+        type: "computer.task.started",
+        taskId: task.taskId,
+        projectId: task.projectId,
+        appName: task.appName,
+        maxSteps: task.maxSteps,
+      });
+    }
+
+    const taskAccess = await requireControlAccess(ctx, { appName: task.appName, kind: "screenshot" });
+    if (taskAccess.projectId !== task.projectId) {
+      throw new DomainError(ErrorCode.PERMISSION_DENIED, "Computer Use task belongs to another active control project");
+    }
+    if (input.cancel) {
+      task = await finishComputerTask(ctx.stateDir, task.taskId, "canceled", redact(input.outcome ?? "canceled by caller"));
+      return makeResult({ task, readyForNextAction: false }, `Computer Use task ${task.taskId} canceled.`);
+    }
+    if (input.done) {
+      task = await finishComputerTask(ctx.stateDir, task.taskId, "succeeded", redact(input.outcome ?? "goal completed"));
+      await ctx.ledger.append({ type: "computer.task.finished", taskId: task.taskId, projectId: task.projectId, status: task.status });
+      return makeResult({ task, readyForNextAction: false }, `Computer Use task ${task.taskId} completed.`);
+    }
+    if (task.status !== "active") {
+      return makeResult({ task, readyForNextAction: false }, `Computer Use task ${task.taskId} is ${task.status}.`);
+    }
+
+    const actionId = input.lastActionId ?? task.lastActionId;
+    let action = actionId ? await getAction(ctx.stateDir, actionId) : null;
+    if (action && action.appName !== task.appName) {
+      throw new DomainError(ErrorCode.PERMISSION_DENIED, "Linked control action targets another app");
+    }
+    if (action && action.status !== "done" && action.status !== "rejected") {
+      return makeResult(
+        { task, action: toSummary(action), readyForNextAction: false },
+        `Control action ${action.actionId} is ${action.status}; wait for approval/execution before observing again.`,
+      );
+    }
+
+    const captured = await captureE2eAppScreenshot(taskAccess.root, {
+      appName: task.appName,
+      label: `computer-${task.taskId}-step-${task.step + 1}`,
+      waitMs: 250,
+    });
+    const masked = await maskSensitiveRegions({ pngPath: captured.path, appName: task.appName });
+    const png = await fs.readFile(masked.pngPath);
+    const screenshotHash = createHash("sha256").update(png).digest("hex").slice(0, 16);
+    task = await recordComputerObservation(ctx.stateDir, task.taskId, screenshotHash);
+    const stalled = task.repeatedObservationCount >= 2;
+    const actionFailed = Boolean(action && (action.status === "rejected" || action.result?.ok === false));
+    await ctx.ledger.append({
+      type: "computer.task.observed",
+      taskId: task.taskId,
+      projectId: task.projectId,
+      appName: task.appName,
+      step: task.step,
+      screenshotHash,
+      stalled,
+      actionId: action?.actionId,
+      actionOk: action?.result?.ok,
+    });
+
+    return {
+      structuredContent: {
+        task,
+        ...(action ? { action: toSummary(action) } : {}),
+        screenshot: { path: masked.pngPath, bytes: captured.bytes, sha16: screenshotHash, masked: masked.masked },
+        readyForNextAction: task.status === "active",
+        stalled,
+        actionFailed,
+        nextActions:
+          task.status !== "active"
+            ? ["The task reached its step limit. Report the blocker or start a new explicitly scoped task."]
+            : stalled
+              ? ["The screen has not changed across three observations. Do not repeat the same action; inspect the target or report a blocker."]
+              : [
+                  `Call computer_request_action with taskId=${task.taskId}, appName=${task.appName}, one explicit action, and the narrowest AX target available.`,
+                  `After the action finishes, call computer_task_execute with taskId=${task.taskId} to verify the next screen.`,
+                  `When the goal is visibly complete, call computer_task_execute with taskId=${task.taskId}, done=true, and a short outcome.`,
+                ],
+      },
+      content: [
+        { type: "text", text: `Computer Use task ${task.taskId} observation ${task.step}/${task.maxSteps}${stalled ? " (stalled)" : ""}.` },
+        { type: "image", data: png.toString("base64"), mimeType: "image/png" },
+      ],
+    } satisfies CallToolResultLike;
+  });
+}
+
 export interface ComputerActionStatusInput {
   actionId?: string;
 }
 
 export async function handleComputerActionStatus(ctx: ToolContext, input: ComputerActionStatusInput): Promise<CallToolResultLike> {
   return withControlErrorMapping(ctx, "computer_action_status", input, async () => {
-    await requireControlLease(ctx);
+    const access = await requireControlAccess(ctx);
 
     if (input.actionId) {
       const record = await getAction(ctx.stateDir, input.actionId);
       if (!record) {
         throw new DomainError(ErrorCode.NOT_IMPLEMENTED, `Control action not found: ${input.actionId}`);
+      }
+      if (access.grant && !access.grant.apps.includes(record.appName.trim().toLowerCase())) {
+        throw new DomainError(ErrorCode.PERMISSION_DENIED, "Control action is outside the active local grant");
       }
       const summary = toSummary(record);
       return {
@@ -341,7 +566,9 @@ export async function handleComputerActionStatus(ctx: ToolContext, input: Comput
       } satisfies CallToolResultLike;
     }
 
-    const actions = (await listActions(ctx.stateDir)).map(toSummary);
+    const actions = (await listActions(ctx.stateDir))
+      .filter((record) => !access.grant || access.grant.apps.includes(record.appName.trim().toLowerCase()))
+      .map(toSummary);
     return {
       structuredContent: { actions },
       content: [{ type: "text", text: `${actions.length} control action(s) in the queue.` }],
@@ -355,7 +582,7 @@ export interface ComputerKillSwitchInput {
 
 export async function handleComputerKillSwitch(ctx: ToolContext, input: ComputerKillSwitchInput): Promise<CallToolResultLike> {
   return withControlErrorMapping(ctx, "computer_kill_switch", input, async () => {
-    const { projectId } = await requireControlLease(ctx);
+    const { projectId } = await requireControlAccess(ctx);
     await setKill(ctx.stateDir);
     await ctx.ledger.append({ type: "control.kill", projectId, reason: input.reason });
     return {

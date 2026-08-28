@@ -116,6 +116,22 @@ describe("Store", () => {
     expect(session.lease?.leaseId).toBe("lease-1");
   });
 
+  it("round-trips the local-only control lease preset", async () => {
+    await store.setSession({
+      activeProjectId: "alpha-app",
+      mode: "read",
+      lease: {
+        projectId: "alpha-app",
+        leaseId: "lease-control",
+        projectRoot: "/workspace/alpha-app",
+        preset: "control",
+        issuedAt: 1000,
+        expiresAt: 2000,
+      },
+    });
+    await expect(store.getSession()).resolves.toMatchObject({ lease: { preset: "control" } });
+  });
+
   it("stamps setSession's updatedAt with an integer epoch-ms value, ignoring caller input", async () => {
     await store.setSession({ updatedAt: 1 });
     const raw = JSON.parse(await readFile(join(dir, "sessions.json"), "utf8"));

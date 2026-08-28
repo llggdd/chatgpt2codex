@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createServer } from "./mcp-server.js";
 import type { ToolContext } from "../types.js";
 
-const CONTROL_TOOL_NAMES = ["computer_screenshot", "computer_request_action", "computer_action_status", "computer_kill_switch"];
+const CONTROL_TOOL_NAMES = ["computer_screenshot", "computer_request_action", "computer_task_execute", "computer_action_status", "computer_kill_switch"];
 
 function makeCtx(): ToolContext {
   const stateDir = "/tmp/chatgpt2codex-tools-catalog-test";
@@ -240,7 +240,7 @@ describe("tool catalog", () => {
       }
     });
 
-    it("exposes all 4 control tools in tools/list once CHATGPT2CODEX_CONTROL_CHATGPT=1, with oauth2 securitySchemes and Confirm/Deny-driving annotations", async () => {
+    it("exposes all 5 control tools in tools/list once CHATGPT2CODEX_CONTROL_CHATGPT=1, with oauth2 securitySchemes and Confirm/Deny-driving annotations", async () => {
       process.env.CHATGPT2CODEX_CONTROL_CHATGPT = "1";
       const server = await createServer(makeCtx());
       const handler = (
