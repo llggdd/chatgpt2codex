@@ -168,6 +168,19 @@ async function requireControlAccess(
   if (!entry) {
     throw new DomainError(ErrorCode.PROJECT_NOT_FOUND, `Control Grant project not found: ${grant.projectId}`);
   }
+  // A remote session can carry a normal read/write lease for one project
+  // while the owner-issued desktop grant belongs to another. Do not silently
+  // let Computer Use fall back to the grant's project in that case: the chat
+  // would edit/inspect one project and drive the desktop under another.
+  // Requiring an explicit re-selection or local re-grant makes the boundary
+  // visible and prevents a stale grant from surprising the caller.
+  if (active && active.projectId !== grant.projectId) {
+    throw new DomainError(ErrorCode.PERMISSION_DENIED, "The active project does not match the local Computer Use grant", {
+      activeProjectId: active.projectId,
+      grantProjectId: grant.projectId,
+      nextTool: "computer_access_status",
+    });
+  }
   return { projectId: entry.projectId, root: entry.root, source: "local-grant", grant };
 }
 
@@ -210,8 +223,9 @@ export async function handleComputerAccessStatus(ctx: ToolContext): Promise<Call
       }
     }
     const grantProjectRegistered = Boolean(grant && entries.some((entry) => entry.projectId === grant.projectId));
+    const grantMatchesActiveProject = Boolean(!grant || !active || grant.projectId === active.projectId);
     const controlLease = active?.lease?.preset === "control" && Date.now() <= (active.lease.expiresAt ?? 0);
-    const usableGrant = Boolean(grant && grantMatchesInstance && grantProjectRegistered);
+    const usableGrant = Boolean(grant && grantMatchesInstance && grantProjectRegistered && grantMatchesActiveProject);
     const ready = controlEnabled && (controlLease || usableGrant);
     const nextActions: string[] = [];
     if (!controlEnabled) {
@@ -227,6 +241,9 @@ export async function handleComputerAccessStatus(ctx: ToolContext): Promise<Call
     }
     if (grant && grantMatchesInstance && !grantProjectRegistered) {
       nextActions.push("Refresh the workspace index so the grant's project is registered in this runtime.");
+    }
+    if (grant && grantMatchesInstance && grantProjectRegistered && !grantMatchesActiveProject) {
+      nextActions.push("Select the project named by the local Computer Use Grant, or issue a new grant for the active project.");
     }
     if (!controlLease && !grantMatchesInstance) {
       nextActions.push(
@@ -255,6 +272,7 @@ export async function handleComputerAccessStatus(ctx: ToolContext): Promise<Call
           usedActions: grant.usedActions,
           matchesThisInstance: grantMatchesInstance,
           projectRegistered: grantProjectRegistered,
+          matchesActiveProject: grantMatchesActiveProject,
         }
       : null;
 

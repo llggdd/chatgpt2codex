@@ -268,6 +268,55 @@ describe("desktop-control tool gating", () => {
     expect(events.some((event) => event.type === "control.grant.consumed")).toBe(true);
   });
 
+  it("rejects a Computer Use grant when the conversation selected another project", async () => {
+    process.env.CHATGPT2CODEX_CONTROL = "1";
+    process.env.CHATGPT2CODEX_CONTROL_ALLOWLIST = "TextEdit";
+    const { ctx } = makeCtx(stateDir, projectRoot);
+    const otherRoot = path.join(ctx.workspaceRoot, "other-project");
+    ctx.registry.push({ projectId: "other", name: "other", root: otherRoot, aliases: [] });
+    ctx.remote = true;
+    ctx.identity = {
+      version: 1,
+      instanceId: "inst_remote-control-test",
+      displayName: "Remote Control Test",
+      createdAt: 0,
+      updatedAt: 0,
+    };
+    ctx.boundInstanceId = ctx.identity.instanceId;
+    await ctx.store.setSession({
+      activeProjectId: "other",
+      mode: "read",
+      lease: {
+        projectId: "other",
+        leaseId: "lease-other",
+        projectRoot: otherRoot,
+        preset: "full-write",
+        issuedAt: Date.now(),
+        expiresAt: Date.now() + 60_000,
+      },
+    });
+    await issueControlGrant(stateDir, {
+      instanceId: ctx.identity.instanceId,
+      projectId: "proj",
+      apps: ["TextEdit"],
+      kinds: ["click"],
+      maxActions: 2,
+    });
+    const tools = await registeredTools(ctx);
+
+    const result = await tools.computer_action_status?.handler?.({});
+    expect(result?.isError).toBe(true);
+    expect(result?.structuredContent?.code).toBe("PERMISSION_DENIED");
+    expect(result?.structuredContent?.details).toMatchObject({
+      activeProjectId: "other",
+      grantProjectId: "proj",
+    });
+
+    const status = await tools.computer_access_status?.handler?.({});
+    expect(status?.structuredContent?.ready).toBe(false);
+    expect(status?.structuredContent?.localGrant).toMatchObject({ matchesActiveProject: false });
+  });
+
   it("blocks a request targeting a sensitive app even with a valid control lease", async () => {
     process.env.CHATGPT2CODEX_CONTROL = "1";
     process.env.CHATGPT2CODEX_CONTROL_ALLOWLIST = "1Password 7";

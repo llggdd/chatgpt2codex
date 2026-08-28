@@ -55,10 +55,13 @@ export function instanceIdForContext(ctx: ToolContext): string {
 
 /**
  * Validate the instance selected by a caller before any side effect runs.
- * Local stdio callers may omit the field for backwards compatibility; every
- * remote transport must pin mutations to the identity captured at connect
- * time. The bound ID prevents a later context replacement from retargeting a
- * live remote session.
+ * Local stdio callers may omit the field for backwards compatibility. A
+ * remote caller should send the explicit target returned by device_identity,
+ * but older MCP clients may not know about that field yet. When the transport
+ * itself is bound to an immutable instance id, omission is safe to resolve as
+ * that bound id; an explicit different id is still rejected. A remote context
+ * without a bound id remains fail-closed because there is no trustworthy
+ * implicit target to use.
  */
 export function assertTargetInstance(ctx: ToolContext, toolName: string, input: unknown): void {
   if (!isTargetInstanceTool(toolName)) return;
@@ -69,9 +72,16 @@ export function assertTargetInstance(ctx: ToolContext, toolName: string, input: 
   const identity = ctx.identity ?? fallbackDeviceIdentity();
   const expected = instanceIdForContext(ctx);
   if (ctx.remote && (requested === undefined || requested === "")) {
+    // Streamable HTTP MCP and the Actions bridge bind every remote request to
+    // the identity captured when the connection/server was created. This
+    // compatibility path lets clients that cached an older schema (without
+    // device_identity/targetInstanceId) continue to work while preserving the
+    // instance boundary. New clients should still send the explicit field so
+    // a multi-endpoint model can prove it chose the intended machine.
+    if (ctx.boundInstanceId) return;
     throw new DomainError(
       ErrorCode.TARGET_INSTANCE_REQUIRED,
-      `targetInstanceId is required for remote ${toolName}; call device_identity first and target this instance explicitly`,
+      `targetInstanceId is required for this unbound remote ${toolName}; call device_identity first and target this instance explicitly`,
       { required: true, actual: expected, instanceName: identity.displayName, tool: toolName },
     );
   }

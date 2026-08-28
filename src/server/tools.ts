@@ -1021,7 +1021,9 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
             targetInstanceId: z
               .string()
               .optional()
-              .describe("Required for remote calls; copy the exact instanceId returned by device_identity."),
+              .describe(
+                "Recommended for remote calls; copy the exact instanceId returned by device_identity. Bound MCP connections may omit it for legacy-client compatibility.",
+              ),
           }
         : configuredSchema;
     return rawRegisterTool(
@@ -1148,7 +1150,7 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
               "For /goal, deep research, or broad implementation prompts: call goal_loop or goal_intake immediately, then continue with project selection and inspection. Do not spend a long thinking turn before the first tool call.",
               "For Codex-style persistence: use goal_loop, perform one small inspect/edit/verify batch, then call goal_loop again with lastResult. Repeat until done or truly blocked.",
               "For parallel work: use task_execute when you have a goal plus an explicit execution spec, or task_start for a low-level guarded command/shell/E2E job; then poll task_status/task_result. Read jobs may share a project, writes are serialized per project.",
-              "When multiple computers or MCP registrations are connected, call device_identity first and verify instanceName/serverName before selecting a project or editing. Every remote side-effecting call must include the exact targetInstanceId returned by device_identity; a missing or different target is rejected before local state changes.",
+              "When multiple computers or MCP registrations are connected, call device_identity first and verify instanceName/serverName before selecting a project or editing. Send its exact instanceId as targetInstanceId on remote side effects when the client exposes the field; a bound endpoint infers its own id for legacy clients, while a different explicit target is rejected before local state changes.",
               "workspace_list_projects or workspace_refresh_index",
               "project_select with preset=full-write for edits",
               "project_rules, project_status, code_search",
@@ -3828,7 +3830,9 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
           targetInstanceId: z
             .string()
             .optional()
-            .describe("Required for remote calls; copy the exact instanceId returned by device_identity."),
+            .describe(
+              "Recommended for remote calls; copy the exact instanceId returned by device_identity. Bound MCP connections may omit it for legacy-client compatibility.",
+            ),
         },
       },
       async (input) => handleComputerScreenshot(ctx, input),
@@ -3852,7 +3856,9 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
           targetInstanceId: z
             .string()
             .optional()
-            .describe("Required for remote calls; copy the exact instanceId returned by device_identity."),
+            .describe(
+              "Recommended for remote calls; copy the exact instanceId returned by device_identity. Bound MCP connections may omit it for legacy-client compatibility.",
+            ),
         },
         _meta: chatGptToolMeta("Confirming desktop action...", "Desktop action executed"),
       },
@@ -3879,7 +3885,9 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
           targetInstanceId: z
             .string()
             .optional()
-            .describe("Required for remote calls; copy the exact instanceId returned by device_identity."),
+            .describe(
+              "Recommended for remote calls; copy the exact instanceId returned by device_identity. Bound MCP connections may omit it for legacy-client compatibility.",
+            ),
         },
       },
       async (input) => handleComputerTaskExecute(ctx, input),
@@ -3901,7 +3909,9 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
           targetInstanceId: z
             .string()
             .optional()
-            .describe("Required for remote calls; copy the exact instanceId returned by device_identity."),
+            .describe(
+              "Recommended for remote calls; copy the exact instanceId returned by device_identity. Bound MCP connections may omit it for legacy-client compatibility.",
+            ),
         },
       },
       async (input) => handleComputerActionStatus(ctx, input),
@@ -3920,7 +3930,9 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
           targetInstanceId: z
             .string()
             .optional()
-            .describe("Required for remote calls; copy the exact instanceId returned by device_identity."),
+            .describe(
+              "Recommended for remote calls; copy the exact instanceId returned by device_identity. Bound MCP connections may omit it for legacy-client compatibility.",
+            ),
         },
       },
       async (input) => handleComputerKillSwitch(ctx, input),
