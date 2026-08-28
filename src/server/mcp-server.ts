@@ -28,7 +28,7 @@ export async function createServer(ctx: ToolContext): Promise<McpServer> {
       // Keep the protocol-level instruction free of user-supplied display
       // names; the human label remains available as structured data through
       // device_identity and tool-call proofs.
-      instructions: `Connected ChatGPT To Codex instance ${mcpServerName(identity)}. Call device_identity before selecting a project when multiple installations are connected and pass its instanceId as targetInstanceId on mutations when available; bound remote connections infer their own id for legacy clients with an older cached schema.`,
+      instructions: `Connected ChatGPT To Codex instance ${mcpServerName(identity)}. Call device_identity before selecting a project when multiple installations are connected and pass its instanceId as targetInstanceId on mutations when available; bound remote connections infer their own id for legacy clients with an older cached schema. If a legacy client reconnects between calls, pass the explicit projectId returned by project_select so the short-lived lease handoff can be applied.`,
     },
   );
 

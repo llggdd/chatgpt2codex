@@ -196,6 +196,11 @@ before execution. Refresh or reconnect the `code-x` registration after an
 upgrade so the current `device_identity` tool and target field appear.
 Remote MCP connections keep their active project and lease state isolated, so
 multiple simultaneous ChatGPT tasks can select different projects safely.
+If an older `code-x` client recreates the HTTP connection for each tool call,
+the gateway keeps a short-lived lease handoff bound to that OAuth client. After
+`project_select`, send the same explicit `projectId` to the next command/edit;
+the handoff expires with the lease and is never written to the global local
+session.
 If ChatGPT keeps showing the old metadata after a rename, refresh or reconnect
 that app registration and verify the connector URL points to the intended host.
 Isolation is per remote MCP connection; concurrent workflows sharing one

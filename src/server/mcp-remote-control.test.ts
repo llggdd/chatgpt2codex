@@ -262,6 +262,40 @@ describe("remote MCP session (/mcp, how ChatGPT connects) marks ctx.remote", () 
     expect(result.structuredContent?.lease?.preset).toBe("full-write");
   }, 20_000);
 
+  it("hands a lease to a legacy client that recreates the MCP connection per call", async () => {
+    const ctx = makeCtx(stateDir, projectRoot);
+    const app = await startApp(ctx);
+    stop = app.stop;
+
+    const token = await getMcpAccessToken(app.baseUrl);
+    client = await connectMcpClient(app.baseUrl, token);
+
+    // Omit targetInstanceId as an older cached code-x schema would. The
+    // bound remote endpoint accepts that legacy shape and publishes the
+    // resulting lease for the next connection belonging to this OAuth client.
+    const selection = (await client.callTool({
+      name: "project_select",
+      arguments: { projectId: "proj", reason: "legacy reconnect", preset: "full-write" },
+    })) as { isError?: boolean; structuredContent?: { lease?: { projectId?: string } } };
+    expect(selection.isError).toBeFalsy();
+    expect(selection.structuredContent?.lease?.projectId).toBe("proj");
+
+    await client.close();
+    client = undefined;
+
+    // A legacy client starts a fresh MCP initialize here, so there is no
+    // mcp-session-id and no per-connection lease. The server should bridge the
+    // short-lived lease instead of requiring project_select again.
+    secondClient = await connectMcpClient(app.baseUrl, token);
+    const shell = (await secondClient.callTool({
+      name: "local_shell_run",
+      arguments: { projectId: "proj", command: "printf legacy-session" },
+    })) as { isError?: boolean; structuredContent?: { exitCode?: number; stdoutSummary?: string } };
+    expect(shell.isError).toBeFalsy();
+    expect(shell.structuredContent?.exitCode).toBe(0);
+    expect(shell.structuredContent?.stdoutSummary).toContain("legacy-session");
+  }, 30_000);
+
   it("keeps active project and lease state isolated across simultaneous MCP clients", async () => {
     const secondProjectRoot = await fs.mkdtemp(path.join(os.tmpdir(), "chatgpt2codex-mcp-remote-second-project-"));
     const sourceDir = await fs.mkdtemp(path.join(os.tmpdir(), "chatgpt2codex-mcp-remote-source-"));
