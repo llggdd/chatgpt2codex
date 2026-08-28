@@ -77,6 +77,8 @@ interface TrackedSession {
   lastActiveAtMs: number;
   /** Key for the in-memory active-project/lease state owned by this client. */
   sessionStateKey: string;
+  /** Identity captured at initialize time; never inferred from later input. */
+  boundInstanceId: string;
 }
 
 function sendJsonRpcError(res: Response, status: number, code: number, message: string): void {
@@ -389,7 +391,12 @@ export function createHttpServer(ctx: ToolContext, config: HttpServerConfig): Ru
           onsessioninitialized: (newSessionId) => {
             if (transport) {
               lastSessionActivityAtMs = Date.now();
-              sessions.set(newSessionId, { transport, lastActiveAtMs: lastSessionActivityAtMs, sessionStateKey });
+              sessions.set(newSessionId, {
+                transport,
+                lastActiveAtMs: lastSessionActivityAtMs,
+                sessionStateKey,
+                boundInstanceId: identity.instanceId,
+              });
             }
           },
         });
@@ -410,6 +417,7 @@ export function createHttpServer(ctx: ToolContext, config: HttpServerConfig): Ru
           const mcpServer = await createMcpServer({
             ...serverContext,
             remote: true,
+            boundInstanceId: identity.instanceId,
             // Use the per-connection state key as the audit/session scope. It
             // is created before the protocol session is initialized, remains
             // stable for the connection, and never exposes an internal token
