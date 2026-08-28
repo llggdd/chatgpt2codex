@@ -213,5 +213,16 @@ describe("command-runner", () => {
         code: ErrorCode.TIMEOUT,
       });
     }, 10000);
+
+    it("honors an AbortSignal for background-task cancellation", async () => {
+      await writeFile(
+        join(root, "package.json"),
+        JSON.stringify({ scripts: { test: "node -e \"setTimeout(() => {}, 5000)\"" } }),
+      );
+      const controller = new AbortController();
+      const pending = runCommand(root, "npm:test", [], 30, { signal: controller.signal });
+      setTimeout(() => controller.abort(), 50);
+      await expect(pending).rejects.toMatchObject({ code: ErrorCode.TASK_CANCELED });
+    }, 10000);
   });
 });

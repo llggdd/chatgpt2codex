@@ -265,6 +265,7 @@ export async function runCommand(
   commandId: string,
   args?: string[],
   timeoutSec?: number,
+  options?: { signal?: AbortSignal },
 ): Promise<{
   exitCode: number;
   stdoutSummary: string;
@@ -310,15 +311,37 @@ export async function runCommand(
   return await new Promise((resolve, reject) => {
     let settled = false;
     let timedOut = false;
+    let aborted = false;
     let timeoutHandle: NodeJS.Timeout | undefined;
+    const signal = options?.signal;
+    const abortHandler = () => {
+      if (settled || aborted || timedOut) return;
+      aborted = true;
+      killProcessTree(child?.pid, () =>
+        finish(() =>
+          reject(
+            new DomainError(ErrorCode.TASK_CANCELED, `command "${commandId}" was canceled`, {
+              commandId,
+            }),
+          ),
+        ),
+      );
+    };
     const finish = (fn: () => void) => {
       if (settled) return;
       settled = true;
       if (timeoutHandle) clearTimeout(timeoutHandle);
+      signal?.removeEventListener("abort", abortHandler);
       fn();
     };
 
-    const child = execFile(
+    if (signal?.aborted) {
+      finish(() => reject(new DomainError(ErrorCode.TASK_CANCELED, `command "${commandId}" was canceled`, { commandId })));
+      return;
+    }
+
+    let child: ReturnType<typeof execFile> | undefined;
+    child = execFile(
       invocation.file,
       invocation.args,
       {
@@ -328,7 +351,7 @@ export async function runCommand(
         windowsHide: true,
       },
       (error, stdout, stderr) => {
-        if (timedOut) return;
+        if (timedOut || aborted) return;
         const durationMs = Date.now() - start;
         const stdoutBuf = Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout ?? "", "utf8");
         const stderrBuf = Buffer.isBuffer(stderr) ? stderr : Buffer.from(stderr ?? "", "utf8");
@@ -362,5 +385,8 @@ export async function runCommand(
         );
       });
     }, effectiveTimeoutSec * 1000);
+
+    signal?.addEventListener("abort", abortHandler, { once: true });
+    if (signal?.aborted) abortHandler();
   });
 }

@@ -12,6 +12,7 @@ import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { checkResourceAllowed, resourceUrlFromServerUrl } from "@modelcontextprotocol/sdk/shared/auth-utils.js";
 import type { ToolContext } from "../types.js";
 import { createServer as createMcpServer } from "./mcp-server.js";
+import { getTaskManager } from "../task/orchestrator.js";
 import { SingleUserOAuthProvider, type OAuthConfig } from "../auth/oauth-provider.js";
 import { verifyOwnerToken } from "../auth/owner-token.js";
 import { registerActionRoutes } from "./actions.js";
@@ -396,6 +397,7 @@ export function createHttpServer(ctx: ToolContext, config: HttpServerConfig): Ru
         transport.onclose = () => {
           const closedSessionId = transport?.sessionId;
           if (closedSessionId) sessions.delete(closedSessionId);
+          void getTaskManager(serverContext.stateDir).cancelForSession(sessionStateKey).catch(() => undefined);
           remoteSessionStates.delete(sessionStateKey);
         };
 
@@ -408,6 +410,11 @@ export function createHttpServer(ctx: ToolContext, config: HttpServerConfig): Ru
           const mcpServer = await createMcpServer({
             ...serverContext,
             remote: true,
+            // Use the per-connection state key as the audit/session scope. It
+            // is created before the protocol session is initialized, remains
+            // stable for the connection, and never exposes an internal token
+            // in the public API.
+            sessionId: sessionStateKey,
             sessionStore: {
               getSession: async () => remoteSessionState.state,
               setSession: async (state) => {

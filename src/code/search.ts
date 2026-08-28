@@ -3,6 +3,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { DomainError, ErrorCode } from "../types.js";
 import { resolveInProject } from "../policy/paths.js";
+import { indexedSearch } from "./index.js";
 
 const DEFAULT_MAX_RESULTS = 200;
 const HARD_MAX_RESULTS = 200;
@@ -39,8 +40,6 @@ export async function codeSearch(
   mode?: string,
   maxResults?: number,
 ): Promise<{ matches: Match[]; backend: string }> {
-  void mode;
-
   if (!query || query.length === 0) {
     return { matches: [], backend: "ripgrep" };
   }
@@ -51,6 +50,26 @@ export async function codeSearch(
   // scoping any search into it (defense in depth; individual match paths
   // are still confined per-result below).
   const realRoot = await resolveInProject(root, ".", { allowSymlink: false });
+
+  if (mode === "symbol" || mode === "semantic") {
+    const indexed = await indexedSearch(realRoot, query, mode, cap);
+    if (mode === "semantic") {
+      // The incremental index intentionally stores declarations/imports only;
+      // merge ordinary text hits so semantic mode remains useful for a query
+      // that appears inside a function body or template.
+      const text = await tryRipgrep(realRoot, query, cap);
+      if (text) {
+        const seen = new Set(indexed.matches.map((match) => `${match.path}:${match.line}`));
+        const merged = [...indexed.matches];
+        for (const match of text.matches) {
+          if (!seen.has(`${match.path}:${match.line}`)) merged.push({ ...match, score: match.score ?? 0.4 });
+          if (merged.length >= cap) break;
+        }
+        return { matches: merged.slice(0, cap), backend: "incremental-semantic-index" };
+      }
+    }
+    return indexed;
+  }
 
   const rgResult = await tryRipgrep(realRoot, query, cap);
   if (rgResult) return rgResult;

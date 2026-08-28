@@ -162,4 +162,13 @@ describe("runLocalShell", () => {
       code: ErrorCode.APPROVAL_REQUIRED,
     });
   });
+
+  it("honors an AbortSignal for background-task cancellation", async () => {
+    const controller = new AbortController();
+    const pending = runLocalShell(root, "node -e \"setTimeout(() => {}, 5000)\"", undefined, 30, {
+      signal: controller.signal,
+    });
+    setTimeout(() => controller.abort(), 50);
+    await expect(pending).rejects.toMatchObject({ code: ErrorCode.TASK_CANCELED });
+  }, 10000);
 });

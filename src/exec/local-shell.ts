@@ -103,6 +103,7 @@ export async function runLocalShell(
   command: string,
   cwd?: string,
   timeoutSec?: number,
+  options?: { signal?: AbortSignal },
 ): Promise<{
   cwd: string;
   exitCode: number;
@@ -129,7 +130,33 @@ export async function runLocalShell(
   const start = Date.now();
 
   return await new Promise((resolve, reject) => {
-    exec(
+    let settled = false;
+    let aborted = false;
+    let child: ReturnType<typeof exec> | undefined;
+    const signal = options?.signal;
+    const finish = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener("abort", abortHandler);
+      fn();
+    };
+    const abortHandler = () => {
+      if (settled || aborted) return;
+      aborted = true;
+      try {
+        child?.kill("SIGKILL");
+      } catch {
+        // The shell may have exited between the abort and kill calls.
+      }
+      finish(() =>
+        reject(new DomainError(ErrorCode.TASK_CANCELED, "local shell command was canceled")),
+      );
+    };
+    if (signal?.aborted) {
+      finish(() => reject(new DomainError(ErrorCode.TASK_CANCELED, "local shell command was canceled")));
+      return;
+    }
+    child = exec(
       command,
       {
         cwd: commandCwd,
@@ -140,16 +167,17 @@ export async function runLocalShell(
         windowsHide: true,
       },
       (error, stdout, stderr) => {
+        if (settled || aborted) return;
         const durationMs = Date.now() - start;
         const stdoutBuf = Buffer.from(stdout ?? "", "utf8");
         const stderrBuf = Buffer.from(stderr ?? "", "utf8");
 
         if (error && (error as NodeJS.ErrnoException & { killed?: boolean }).killed) {
-          reject(
+          finish(() => reject(
             new DomainError(ErrorCode.TIMEOUT, `local shell command timed out after ${effectiveTimeoutSec}s`, {
               timeoutSec: effectiveTimeoutSec,
             }),
-          );
+          ));
           return;
         }
 
@@ -157,15 +185,17 @@ export async function runLocalShell(
         const outErr = truncateOutput(stderrBuf);
         const exitCode = typeof error?.code === "number" ? error.code : error ? 1 : 0;
 
-        resolve({
+        finish(() => resolve({
           cwd: path.relative(baseRoot, commandCwd) || ".",
           exitCode,
           stdoutSummary: redact(outStd.text),
           stderrSummary: redact(outErr.text),
           durationMs,
           outputTruncated: outStd.truncated || outErr.truncated,
-        });
+        }));
       },
     );
+    signal?.addEventListener("abort", abortHandler, { once: true });
+    if (signal?.aborted) abortHandler();
   });
 }

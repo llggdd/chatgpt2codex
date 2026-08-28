@@ -108,6 +108,10 @@ export interface ToolContext {
     getSession(): Promise<unknown>;
     setSession(s: unknown): Promise<void>;
   };
+  /** Stable identifier for the transport/client session, when available. */
+  sessionId?: string;
+  /** Optional task context used when a tool is executing inside a task. */
+  taskId?: string;
   config: Config;
   /** True for an MCP server instance handed a remote/network transport
    * session (currently: src/server/http.ts's /mcp endpoint, which is how
@@ -160,6 +164,14 @@ export enum ErrorCode {
   CONFIRMATION_PENDING = "CONFIRMATION_PENDING",
   SENSITIVE_TARGET_BLOCKED = "SENSITIVE_TARGET_BLOCKED",
   CONTROL_KILLED = "CONTROL_KILLED",
+  /** A caller tried to mutate a different named MCP instance. */
+  TARGET_INSTANCE_MISMATCH = "TARGET_INSTANCE_MISMATCH",
+  /** A requested background task does not exist in this runtime state. */
+  TASK_NOT_FOUND = "TASK_NOT_FOUND",
+  /** A queued/running task was interrupted when the local process restarted. */
+  TASK_INTERRUPTED = "TASK_INTERRUPTED",
+  /** A background task was canceled before it completed. */
+  TASK_CANCELED = "TASK_CANCELED",
 }
 
 /** Thrown by any domain-level failure. Tool boundary must catch and map. */

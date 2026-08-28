@@ -62,4 +62,21 @@ describe("codeSearch", () => {
     const result = await codeSearch(root, "");
     expect(result.matches).toEqual([]);
   });
+
+  it("uses the incremental symbol index for symbol and semantic modes", async () => {
+    await fs.mkdir(path.join(root, "src"), { recursive: true });
+    await fs.writeFile(
+      path.join(root, "src", "widget.ts"),
+      "import { helper } from './helper';\nexport function renderWidget() { return helper(); }\n",
+      "utf8",
+    );
+    const symbols = await codeSearch(root, "renderWidget", "symbol");
+    expect(symbols.backend).toBe("incremental-symbol-index");
+    expect(symbols.matches[0]).toMatchObject({ path: "src/widget.ts", line: 2 });
+    const semantic = await codeSearch(root, "helper", "semantic");
+    expect(semantic.backend).toBe("incremental-semantic-index");
+    expect(semantic.matches.some((match) => match.path === "src/widget.ts")).toBe(true);
+    const body = await codeSearch(root, "return helper", "semantic");
+    expect(body.matches.some((match) => match.line === 2)).toBe(true);
+  });
 });
