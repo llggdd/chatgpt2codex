@@ -53,6 +53,7 @@ import { resolveInProject } from "../policy/paths.js";
 import { isSecretPath, redact } from "../policy/secrets.js";
 import { resolveActiveProject } from "../workspace/active.js";
 import { CONTROL_TOOL_NAMES, isControlChatGptExposed, isControlEnabled } from "../control/policy.js";
+import { assertTargetInstance, instanceIdForContext, isTargetInstanceTool, TARGET_INSTANCE_TOOL_NAMES } from "../instance-target.js";
 import { clearKill } from "../control/queue.js";
 import {
   handleComputerActionStatus,
@@ -206,41 +207,6 @@ const CONTROL_ANNOTATIONS = {
 
 const CHATGPT_SAFETY_HIDDEN_TOOL_NAMES = new Set(["code_context_pack"]);
 
-/** Side-effecting calls accept an explicit instance target so two computers
- * with otherwise identical MCP registrations cannot be mixed accidentally. */
-const TARGET_INSTANCE_TOOL_NAMES = new Set([
-  "goal_intake",
-  "goal_loop",
-  "workspace_refresh_index",
-  "project_select",
-  "file_apply_patch",
-  "file_create",
-  "change_and_verify",
-  "command_run",
-  "local_shell_run",
-  "e2e_start_server",
-  "e2e_open_target",
-  "e2e_run_command",
-  "e2e_test_and_show_screenshot",
-  "e2e_screenshot",
-  "e2e_open_url_screenshot",
-  "git_commit",
-  "git_push",
-  "checkpoint_restore",
-  "save_image",
-  "save_image_from_clipboard",
-  "save_image_from_download",
-  "save_image_from_path",
-  "save_chatgpt_image",
-  "save_chatgpt_image_from_url",
-  "save_image_from_url",
-  "open_chatgpt_images_app",
-  "task_start",
-  "task_execute",
-  "task_cancel",
-  ...CONTROL_TOOL_NAMES,
-]);
-
 const CACHEABLE_READ_TOOL_NAMES = new Set([
   "device_identity",
   "workspace_list_projects",
@@ -364,7 +330,7 @@ async function withErrorMapping<T extends Record<string, unknown>>(
   const cacheScope = `${currentIdentity.instanceId}:${ctx.sessionId ?? "local"}`;
   const key = cacheable ? cacheKey(toolName, redactUnknown(input), cacheScope) : undefined;
   try {
-    assertTargetInstance(ctx, input);
+    assertTargetInstance(ctx, toolName, input);
     if (key) {
       const cached = cache.get<ToolResult<T>>(key);
       if (cached) {
@@ -407,21 +373,23 @@ async function withErrorMapping<T extends Record<string, unknown>>(
   }
 }
 
-function assertTargetInstance(ctx: ToolContext, input: unknown): void {
-  const requested =
-    input && typeof input === "object" && !Array.isArray(input)
-      ? (input as Record<string, unknown>).targetInstanceId
-      : undefined;
-  if (requested === undefined || requested === "") return;
-  if (typeof requested !== "string") {
-    throw new DomainError(ErrorCode.TARGET_INSTANCE_MISMATCH, "targetInstanceId must be a string");
-  }
-  const identity = ctx.identity ?? fallbackDeviceIdentity();
-  if (requested !== identity.instanceId) {
+function assertTaskOwnership(ctx: ToolContext, task: TaskRecord, operation: string): void {
+  if (!ctx.remote) return;
+  const expected = instanceIdForContext(ctx);
+  if (task.targetInstanceId !== expected) {
     throw new DomainError(
       ErrorCode.TARGET_INSTANCE_MISMATCH,
-      `This MCP instance is ${identity.instanceId}; targetInstanceId was ${requested}`,
-      { requested, actual: identity.instanceId, instanceName: identity.displayName },
+      `Task ${task.taskId} belongs to another MCP instance`,
+      { taskId: task.taskId, requested: expected, actual: task.targetInstanceId, operation },
+    );
+  }
+  // MCP connections receive an internal session scope. Actions intentionally
+  // have no persistent session and therefore stop at the instance check.
+  if (ctx.sessionId && task.sessionId !== ctx.sessionId) {
+    throw new DomainError(
+      ErrorCode.PERMISSION_DENIED,
+      `Task ${task.taskId} belongs to another remote session`,
+      { taskId: task.taskId, operation },
     );
   }
 }
@@ -1047,7 +1015,13 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
       typeof configuredSchema === "object" &&
       !Array.isArray(configuredSchema) &&
       !("safeParse" in (configuredSchema as Record<string, unknown>))
-        ? { ...(configuredSchema as Record<string, unknown>), targetInstanceId: z.string().optional() }
+        ? {
+            ...(configuredSchema as Record<string, unknown>),
+            targetInstanceId: z
+              .string()
+              .optional()
+              .describe("Required for remote calls; copy the exact instanceId returned by device_identity."),
+          }
         : configuredSchema;
     return rawRegisterTool(
       name,
@@ -1172,7 +1146,7 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
               "For /goal, deep research, or broad implementation prompts: call goal_loop or goal_intake immediately, then continue with project selection and inspection. Do not spend a long thinking turn before the first tool call.",
               "For Codex-style persistence: use goal_loop, perform one small inspect/edit/verify batch, then call goal_loop again with lastResult. Repeat until done or truly blocked.",
               "For parallel work: use task_execute when you have a goal plus an explicit execution spec, or task_start for a low-level guarded command/shell/E2E job; then poll task_status/task_result. Read jobs may share a project, writes are serialized per project.",
-              "When multiple computers or MCP registrations are connected, call device_identity first and verify instanceName/serverName before selecting a project or editing.",
+              "When multiple computers or MCP registrations are connected, call device_identity first and verify instanceName/serverName before selecting a project or editing. Every remote side-effecting call must include the exact targetInstanceId returned by device_identity; a missing or different target is rejected before local state changes.",
               "workspace_list_projects or workspace_refresh_index",
               "project_select with preset=full-write for edits",
               "project_rules, project_status, code_search",
@@ -1192,7 +1166,7 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
             capabilities: {
               workspaceRoot: ctx.workspaceRoot,
               concurrency:
-                "Each remote MCP connection keeps an isolated active project and lease. Background tasks add a bounded concurrency pool and per-project read/write locks; use task_status/task_result for progress.",
+                "Each remote MCP connection keeps an isolated active project, lease, loop, and task visibility. Background tasks add a bounded concurrency pool and per-project read/write locks; use task_status/task_result for progress and include targetInstanceId on mutations.",
               fileEdits: "project-confined patch/create with secret-path blocking",
               shell: "project-confined local shell with redacted output and secret/OS-destructive guards",
               e2e:
@@ -1244,7 +1218,7 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
     {
       title: "Start a broad coding goal",
       description:
-        "Call this immediately when the user gives a /goal, deep research, vague large task, or says to proceed quickly. It records the goal and returns the next concrete tool calls within seconds, avoiding ChatGPT's ~30s silent action timeout.",
+        "Call this immediately when the user gives a /goal, deep research, vague large task, or says to proceed quickly. It records the goal and returns the next concrete tool calls within seconds, avoiding ChatGPT's ~30s silent action timeout. Remote calls must include targetInstanceId from device_identity.",
       annotations: LOCAL_STATE_ANNOTATIONS,
       _meta: chatGptToolMeta("Starting local goal...", "Local goal started"),
       inputSchema: {
@@ -1261,6 +1235,8 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
           goalId: goalIdFor(goal),
           goalPreview: redact(goal).slice(0, 1000),
           projectId: input.projectId,
+          instanceId: identity.instanceId,
+          sessionId: ctx.sessionId,
           mode: input.mode ?? "implement",
           urgency: input.urgency ?? "normal",
           createdAt: new Date().toISOString(),
@@ -1296,7 +1272,7 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
     {
       title: "Run local coding loop",
       description:
-        "Use for Codex-style autonomous coding through ChatGPT when Codex quota is unavailable. It records/continues a local loop and returns the next concrete inspect/edit/verify batch quickly. Call it again with lastResult after each batch until done or blocked.",
+        "Use for Codex-style autonomous coding through ChatGPT when Codex quota is unavailable. It records/continues a local loop and returns the next concrete inspect/edit/verify batch quickly. Call it again with lastResult after each batch until done or blocked. Remote calls must include targetInstanceId from device_identity; loop state is isolated per remote session.",
       annotations: LOCAL_STATE_ANNOTATIONS,
       _meta: chatGptToolMeta("Continuing local coding loop...", "Local coding loop ready"),
       inputSchema: {
@@ -1317,10 +1293,25 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
         let previousTurns = 0;
         let existingTurns: unknown[] = [];
         try {
-          const existing = JSON.parse(await fs.readFile(loopFile, "utf8")) as { turns?: unknown[] };
+          const existing = JSON.parse(await fs.readFile(loopFile, "utf8")) as {
+            turns?: unknown[];
+            instanceId?: unknown;
+            sessionId?: unknown;
+          };
+          if (
+            ctx.remote &&
+            (existing.instanceId !== instanceIdForContext(ctx) || existing.sessionId !== ctx.sessionId)
+          ) {
+            throw new DomainError(
+              ErrorCode.PERMISSION_DENIED,
+              `Goal loop ${loopId} belongs to another remote session`,
+              { loopId },
+            );
+          }
           existingTurns = Array.isArray(existing.turns) ? existing.turns : [];
           previousTurns = existingTurns.length;
-        } catch {
+        } catch (error) {
+          if (error instanceof DomainError) throw error;
           existingTurns = [];
           previousTurns = 0;
         }
@@ -1353,6 +1344,8 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
           "Stop only when the requested work is implemented and verified, a real blocker is proven, or a security/approval gate is hit.";
         const payload = {
           loopId,
+          instanceId: identity.instanceId,
+          sessionId: ctx.sessionId,
           goalPreview: input.goal ? redact(input.goal).slice(0, 1000) : undefined,
           projectId: input.projectId,
           mode: input.mode ?? "implement",
@@ -1401,7 +1394,7 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
     {
       title: "Start a background task",
       description:
-        "Queue a guarded command, shell, or E2E task. Tasks run in the background with a bounded concurrency pool and per-project read/write locks; use task_status/task_result to follow progress.",
+        "Queue a guarded command, shell, or E2E task. Tasks run in the background with a bounded concurrency pool and per-project read/write locks; use task_status/task_result to follow progress. Remote calls must include targetInstanceId from device_identity.",
       annotations: COMMAND_RUN_ANNOTATIONS,
       _meta: chatGptToolMeta("Queueing background task...", "Background task queued"),
       inputSchema: {
@@ -1455,7 +1448,7 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
     {
       title: "Execute a goal as a background task",
       description:
-        "Use one goal entrypoint for local work. With an explicit guarded command/shell/E2E spec it queues a task and returns a taskId; with only a goal it persists a safe execution plan and returns the next required selection/specification steps without guessing a command.",
+        "Use one goal entrypoint for local work. With an explicit guarded command/shell/E2E spec it queues a task and returns a taskId; with only a goal it persists a safe execution plan and returns the next required selection/specification steps without guessing a command. Remote calls must include targetInstanceId from device_identity.",
       annotations: COMMAND_RUN_ANNOTATIONS,
       _meta: chatGptToolMeta("Queueing goal execution...", "Goal execution queued"),
       inputSchema: {
@@ -1570,10 +1563,29 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
         const manager = getTaskManager(ctx.stateDir);
         if (input.taskId) {
           const task = await manager.get(input.taskId);
+          assertTaskOwnership(ctx, task, "task_status");
           return makeResult({ task, maxConcurrent: manager.maxConcurrent }, `Task ${task.taskId}: ${task.status}.`);
         }
-        const tasks = await manager.list({ projectId: input.projectId, status: input.status, limit: input.limit });
-        return makeResult({ tasks, maxConcurrent: manager.maxConcurrent }, `${tasks.length} background task(s).`);
+        const allTasks = await manager.list({
+          projectId: input.projectId,
+          status: input.status,
+          // Filter ownership before applying the caller's limit; otherwise
+          // another remote session's newest tasks could hide this session's
+          // own work from a bounded list response.
+          limit: ctx.remote ? 100 : input.limit,
+        });
+        const tasks = ctx.remote
+          ? allTasks.filter((task) => {
+              try {
+                assertTaskOwnership(ctx, task, "task_status");
+                return true;
+              } catch {
+                return false;
+              }
+            })
+          : allTasks;
+        const limitedTasks = tasks.slice(0, Math.min(100, Math.max(1, Math.floor(input.limit ?? 20))));
+        return makeResult({ tasks: limitedTasks, maxConcurrent: manager.maxConcurrent }, `${limitedTasks.length} background task(s).`);
       }),
   );
 
@@ -1581,7 +1593,7 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
     "task_cancel",
     {
       title: "Cancel a background task",
-      description: "Request cancellation of a queued or running background task.",
+      description: "Request cancellation of a queued or running background task owned by this instance/session. Remote calls must include targetInstanceId from device_identity.",
       annotations: LOCAL_STATE_ANNOTATIONS,
       _meta: chatGptToolMeta("Canceling background task...", "Background task cancellation requested"),
       inputSchema: { taskId: z.string(), reason: z.string().max(500).optional() },
@@ -1589,6 +1601,8 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
     async (input) =>
       withErrorMapping(ctx, "task_cancel", input, async () => {
         const manager = getTaskManager(ctx.stateDir);
+        const existing = await manager.get(input.taskId);
+        assertTaskOwnership(ctx, existing, "task_cancel");
         const task = await manager.cancel(input.taskId);
         await ctx.ledger.append({
           type: "task.cancel.requested",
@@ -1614,6 +1628,7 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
     async (input) =>
       withErrorMapping(ctx, "task_result", input, async () => {
         const task = await getTaskManager(ctx.stateDir).get(input.taskId);
+        assertTaskOwnership(ctx, task, "task_result");
         const ready = task.status !== "queued" && task.status !== "running";
         return makeResult({ task, ready }, ready ? `Task ${task.taskId} finished with ${task.status}.` : `Task ${task.taskId} is ${task.status}.`);
       }),
@@ -3773,6 +3788,10 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
           appName: z.string().optional(),
           label: z.string().optional(),
           waitMs: z.number().int().min(0).max(30_000).optional(),
+          targetInstanceId: z
+            .string()
+            .optional()
+            .describe("Required for remote calls; copy the exact instanceId returned by device_identity."),
         },
       },
       async (input) => handleComputerScreenshot(ctx, input),
@@ -3793,6 +3812,10 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
           keyCode: z.number().int().min(0).optional(),
           reason: z.string().min(1),
           taskId: z.string().regex(/^ctask_[0-9a-fA-F-]{36}$/).optional(),
+          targetInstanceId: z
+            .string()
+            .optional()
+            .describe("Required for remote calls; copy the exact instanceId returned by device_identity."),
         },
         _meta: chatGptToolMeta("Confirming desktop action...", "Desktop action executed"),
       },
@@ -3816,6 +3839,10 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
           done: z.boolean().optional(),
           cancel: z.boolean().optional(),
           outcome: z.string().max(2000).optional(),
+          targetInstanceId: z
+            .string()
+            .optional()
+            .describe("Required for remote calls; copy the exact instanceId returned by device_identity."),
         },
       },
       async (input) => handleComputerTaskExecute(ctx, input),
@@ -3834,6 +3861,10 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
             .string()
             .regex(/^ctl_[0-9a-fA-F-]{36}$/, "actionId must be a control action id issued by computer_request_action")
             .optional(),
+          targetInstanceId: z
+            .string()
+            .optional()
+            .describe("Required for remote calls; copy the exact instanceId returned by device_identity."),
         },
       },
       async (input) => handleComputerActionStatus(ctx, input),
@@ -3849,6 +3880,10 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
         _meta: chatGptToolMeta("Killing desktop control session...", "Desktop control session killed"),
         inputSchema: {
           reason: z.string().optional(),
+          targetInstanceId: z
+            .string()
+            .optional()
+            .describe("Required for remote calls; copy the exact instanceId returned by device_identity."),
         },
       },
       async (input) => handleComputerKillSwitch(ctx, input),

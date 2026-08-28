@@ -55,6 +55,11 @@ ChatGPT To Codex는 내 Mac 또는 Windows PC에서 실행되는 로컬 코딩 �
 11. 복사한 `/mcp` 주소를 붙여넣습니다.
 12. 승인 화면이 나오면 ChatGPT To Codex 앱에서 Owner Token을 복사해 입력합니다.
 
+여러 컴퓨터가 연결된 상태에서는 먼저 `device_identity`를 호출하고, 응답의
+정확한 `instanceId`를 모든 원격 변경 작업의 `targetInstanceId`에 넣어야 합니다.
+값이 없거나 다른 컴퓨터의 ID이면 파일 변경, 명령 실행, E2E, 이미지 저장,
+작업 큐, Computer Use가 실행 전에 거부됩니다.
+
 ### E2E 스크린샷 사용
 
 ChatGPT에 이렇게 말할 수 있습니다.
@@ -173,6 +178,11 @@ Saving settings restarts a running MCP process so the new identity is active.
 The runtime also creates a stable `instanceId` automatically. Both values are
 visible in `/healthz`, the Actions health endpoint, the `device_identity` tool,
 and tool-call proofs.
+Call `device_identity` first and copy its exact `instanceId` into
+`targetInstanceId` on every remote mutation. Project selection, file edits,
+commands, E2E launches, image saves, task creation/cancel, and Computer Use
+are rejected before execution when the field is missing or belongs to another
+computer.
 Remote MCP connections keep their active project and lease state isolated, so
 multiple simultaneous ChatGPT tasks can select different projects safely.
 If ChatGPT keeps showing the old metadata after a rename, refresh or reconnect

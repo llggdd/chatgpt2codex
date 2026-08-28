@@ -66,6 +66,9 @@ Troubleshooting:
 - If more than one computer is connected, give each installation a different
   MCP instance name in Settings. The `/healthz` response and tool results show
   the name and stable instance id, which makes the active computer explicit.
+- Before any remote edit, command, E2E, image save, queued task, or Computer Use
+  call, invoke `device_identity` and pass that exact `instanceId` as
+  `targetInstanceId`; a missing or different id is rejected before execution.
 - Remote MCP connections keep their project/lease selection separate. If two
   workflows share one connection, pass an explicit `projectId` in each call.
 

@@ -122,6 +122,12 @@ export interface ToolContext {
    * desktop-control tools are exposed to ChatGPT
    * (src/control/policy.ts isControlChatGptExposed). */
   remote?: boolean;
+  /**
+   * Identity captured when a remote transport was initialized. This is kept
+   * separate from `identity` so an embedder cannot accidentally validate a
+   * later request against a newly replaced identity object.
+   */
+  boundInstanceId?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -166,6 +172,8 @@ export enum ErrorCode {
   CONTROL_KILLED = "CONTROL_KILLED",
   /** A caller tried to mutate a different named MCP instance. */
   TARGET_INSTANCE_MISMATCH = "TARGET_INSTANCE_MISMATCH",
+  /** A remote side-effecting call omitted the required instance target. */
+  TARGET_INSTANCE_REQUIRED = "TARGET_INSTANCE_REQUIRED",
   /** A requested background task does not exist in this runtime state. */
   TASK_NOT_FOUND = "TASK_NOT_FOUND",
   /** A queued/running task was interrupted when the local process restarted. */

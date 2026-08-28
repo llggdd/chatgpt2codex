@@ -32,6 +32,7 @@ vi.mock("../e2e/local-e2e.js", () => ({
 
 const macInput = await import("../control/mac-input.js");
 const { createServer } = await import("./mcp-server.js");
+const TEST_INSTANCE_ID = "inst_control-confirm-test";
 
 interface RegisteredToolLike {
   handler?: (input: Record<string, unknown>) => Promise<{
@@ -56,6 +57,13 @@ function makeCtx(
   const ctx: ToolContext = {
     workspaceRoot: path.dirname(projectRoot),
     stateDir,
+    identity: {
+      version: 1,
+      instanceId: TEST_INSTANCE_ID,
+      displayName: "Control Confirm Test Instance",
+      createdAt: 0,
+      updatedAt: 0,
+    },
     registry,
     remote: opts.remote,
     ledger: {
@@ -268,7 +276,12 @@ describe("computer_request_action immediate execution (CHATGPT2CODEX_CONTROL_CHA
     await ctx.store.setSession({ activeProjectId: null, mode: "observe", lease: null });
     const tools = await registeredTools(ctx);
 
-    const result = await tools.project_select?.handler?.({ projectId: "proj", reason: "remote self-grant attempt", preset: "control" });
+    const result = await tools.project_select?.handler?.({
+      projectId: "proj",
+      reason: "remote self-grant attempt",
+      preset: "control",
+      targetInstanceId: TEST_INSTANCE_ID,
+    });
 
     expect(result?.isError).toBe(true);
     expect(result?.structuredContent?.code).toBe("PERMISSION_DENIED");

@@ -5,7 +5,7 @@ import { requireProjectLease } from "../workspace/lease-guard.js";
 import { resolveActiveProject } from "../workspace/active.js";
 import { captureE2eAppScreenshot, captureE2eScreenshot } from "../e2e/local-e2e.js";
 import { redact } from "../policy/secrets.js";
-import { fallbackDeviceIdentity } from "../identity/device.js";
+import { assertTargetInstance, instanceIdForContext } from "../instance-target.js";
 import { assertAllowedTarget, controlAllowlist, isAppAllowed, isControlChatGptExposed } from "./policy.js";
 import { assertScreenshotTargetAllowed, maskSensitiveRegions } from "./screenshot-mask.js";
 import { executeApprovedAction } from "./executor.js";
@@ -84,6 +84,7 @@ async function withControlErrorMapping<T extends Record<string, unknown>>(
   fn: () => Promise<ToolResult<T> | CallToolResultLike>,
 ): Promise<CallToolResultLike> {
   try {
+    assertTargetInstance(ctx, toolName, input);
     const result = await fn();
     await ctx.ledger.append({
       type: "tool.call.completed",
@@ -134,11 +135,11 @@ async function requireControlAccess(
       // continue only if a separately local-issued grant validates below.
     }
   }
-  const identity = ctx.identity ?? fallbackDeviceIdentity();
+  const instanceId = instanceIdForContext(ctx);
   let grant: ControlGrant;
   try {
     grant = await authorizeControlGrant(ctx.stateDir, {
-      instanceId: identity.instanceId,
+      instanceId,
       appName: scope.appName,
       kind: scope.kind,
     });
@@ -161,6 +162,7 @@ export interface ComputerScreenshotInput {
   appName?: string;
   label?: string;
   waitMs?: number;
+  targetInstanceId?: string;
 }
 
 export async function handleComputerScreenshot(ctx: ToolContext, input: ComputerScreenshotInput): Promise<CallToolResultLike> {
@@ -246,6 +248,7 @@ export interface ComputerRequestActionInput {
   keyCode?: number;
   reason: string;
   taskId?: string;
+  targetInstanceId?: string;
 }
 
 // Defense in depth for the ChatGPT-exposed immediate-execution branch below:
@@ -281,8 +284,7 @@ export async function handleComputerRequestAction(ctx: ToolContext, input: Compu
     const { projectId } = access;
     if (input.taskId) {
       const task = await getComputerTask(ctx.stateDir, input.taskId);
-      const identity = ctx.identity ?? fallbackDeviceIdentity();
-      if (task.instanceId !== identity.instanceId || task.projectId !== projectId || task.appName !== input.appName) {
+      if (task.instanceId !== instanceIdForContext(ctx) || task.projectId !== projectId || task.appName !== input.appName) {
         throw new DomainError(ErrorCode.PERMISSION_DENIED, "Computer action does not match its Computer Use task scope");
       }
       if (task.status !== "active") {
@@ -323,9 +325,8 @@ export async function handleComputerRequestAction(ctx: ToolContext, input: Compu
     }
 
     if (access.source === "local-grant") {
-      const identity = ctx.identity ?? fallbackDeviceIdentity();
       const consumed = await consumeControlGrant(ctx.stateDir, {
-        instanceId: identity.instanceId,
+        instanceId: instanceIdForContext(ctx),
         projectId,
         appName: input.appName,
         kind: input.kind,
@@ -418,6 +419,7 @@ export interface ComputerTaskExecuteInput {
   done?: boolean;
   cancel?: boolean;
   outcome?: string;
+  targetInstanceId?: string;
 }
 
 /**
@@ -431,11 +433,11 @@ export async function handleComputerTaskExecute(
 ): Promise<CallToolResultLike> {
   const safeInput = { ...input, goal: input.goal ? "[goal redacted]" : undefined, outcome: input.outcome ? "[outcome redacted]" : undefined };
   return withControlErrorMapping(ctx, "computer_task_execute", safeInput, async () => {
-    const identity = ctx.identity ?? fallbackDeviceIdentity();
+    const instanceId = instanceIdForContext(ctx);
     let task;
     if (input.taskId) {
       task = await getComputerTask(ctx.stateDir, input.taskId);
-      if (task.instanceId !== identity.instanceId) {
+      if (task.instanceId !== instanceId) {
         throw new DomainError(ErrorCode.TARGET_INSTANCE_MISMATCH, "Computer Use task belongs to another MCP instance");
       }
       if (input.appName && input.appName !== task.appName) {
@@ -449,7 +451,7 @@ export async function handleComputerTaskExecute(
       }
       const access = await requireControlAccess(ctx, { appName, kind: "screenshot" });
       task = await startComputerTask(ctx.stateDir, {
-        instanceId: identity.instanceId,
+        instanceId,
         projectId: access.projectId,
         appName,
         goalPreview: redact(goal).slice(0, 2000),
@@ -545,6 +547,7 @@ export async function handleComputerTaskExecute(
 
 export interface ComputerActionStatusInput {
   actionId?: string;
+  targetInstanceId?: string;
 }
 
 export async function handleComputerActionStatus(ctx: ToolContext, input: ComputerActionStatusInput): Promise<CallToolResultLike> {
@@ -578,6 +581,7 @@ export async function handleComputerActionStatus(ctx: ToolContext, input: Comput
 
 export interface ComputerKillSwitchInput {
   reason?: string;
+  targetInstanceId?: string;
 }
 
 export async function handleComputerKillSwitch(ctx: ToolContext, input: ComputerKillSwitchInput): Promise<CallToolResultLike> {

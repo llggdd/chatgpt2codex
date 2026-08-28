@@ -202,11 +202,32 @@ describe("desktop-control tool gating", () => {
       maxActions: 2,
     });
     const tools = await registeredTools(ctx);
+
+    const missingTarget = await tools.computer_request_action?.handler?.({
+      appName: "TextEdit",
+      kind: "click",
+      target: { windowPoint: { xRel: 0.5, yRel: 0.5 } },
+      reason: "remote missing target",
+    });
+    expect(missingTarget?.isError).toBe(true);
+    expect(missingTarget?.structuredContent?.code).toBe("TARGET_INSTANCE_REQUIRED");
+
+    const wrongTarget = await tools.computer_request_action?.handler?.({
+      appName: "TextEdit",
+      kind: "click",
+      target: { windowPoint: { xRel: 0.5, yRel: 0.5 } },
+      reason: "remote wrong target",
+      targetInstanceId: "inst_other-computer-000000",
+    });
+    expect(wrongTarget?.isError).toBe(true);
+    expect(wrongTarget?.structuredContent?.code).toBe("TARGET_INSTANCE_MISMATCH");
+
     const result = await tools.computer_request_action?.handler?.({
       appName: "TextEdit",
       kind: "click",
       target: { windowPoint: { xRel: 0.5, yRel: 0.5 } },
       reason: "remote grant test",
+      targetInstanceId: "inst_remote-control-test",
     });
     expect(result?.isError).toBeFalsy();
     expect(result?.structuredContent?.status).toBe("pending");

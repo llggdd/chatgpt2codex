@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { storeOwnerToken } from "../auth/owner-token.js";
+import type { DeviceIdentity } from "../identity/device.js";
 import type { ToolContext } from "../types.js";
 import { createHttpServer, defaultHttpServerConfig } from "./http.js";
 
@@ -55,9 +56,17 @@ function makeCtx(
 ): ToolContext {
   const registry = [{ projectId: "proj", name: "proj", root: projectRoot, aliases: [] }, ...additionalProjects];
   let currentSession: unknown = { activeProjectId: null, mode: "observe", lease: null };
+  const identity: DeviceIdentity = {
+    version: 1,
+    instanceId: "inst_remote-test-instance",
+    displayName: "Remote Test Instance",
+    createdAt: 0,
+    updatedAt: 0,
+  };
   return {
     workspaceRoot: path.dirname(projectRoot),
     stateDir,
+    identity,
     registry,
     ledger: { append: async () => undefined },
     store: {
@@ -192,6 +201,30 @@ describe("remote MCP session (/mcp, how ChatGPT connects) marks ctx.remote", () 
     await fs.rm(projectRoot, { recursive: true, force: true });
   }, 15_000);
 
+  it("requires and validates an explicit instance target before remote mutations", async () => {
+    const ctx = makeCtx(stateDir, projectRoot);
+    const app = await startApp(ctx);
+    stop = app.stop;
+
+    const token = await getMcpAccessToken(app.baseUrl);
+    client = await connectMcpClient(app.baseUrl, token);
+
+    const missing = (await client.callTool({
+      name: "project_select",
+      arguments: { projectId: "proj", reason: "missing instance target", preset: "full-write" },
+    })) as { isError?: boolean; structuredContent?: { code?: string; details?: { actual?: string } } };
+    expect(missing.isError).toBe(true);
+    expect(missing.structuredContent?.code).toBe("TARGET_INSTANCE_REQUIRED");
+    expect(missing.structuredContent?.details?.actual).toBe("inst_remote-test-instance");
+
+    const wrong = (await client.callTool({
+      name: "project_select",
+      arguments: { projectId: "proj", reason: "wrong instance target", preset: "full-write", targetInstanceId: "inst_other-computer-000000" },
+    })) as { isError?: boolean; structuredContent?: { code?: string } };
+    expect(wrong.isError).toBe(true);
+    expect(wrong.structuredContent?.code).toBe("TARGET_INSTANCE_MISMATCH");
+  }, 20_000);
+
   it("rejects project_select preset=control over /mcp, even with the ChatGPT-confirm exposure flag on", async () => {
     process.env.CHATGPT2CODEX_CONTROL_CHATGPT = "1";
     const ctx = makeCtx(stateDir, projectRoot);
@@ -203,7 +236,7 @@ describe("remote MCP session (/mcp, how ChatGPT connects) marks ctx.remote", () 
 
     const result = (await client.callTool({
       name: "project_select",
-      arguments: { projectId: "proj", reason: "remote self-grant attempt", preset: "control" },
+      arguments: { projectId: "proj", reason: "remote self-grant attempt", preset: "control", targetInstanceId: "inst_remote-test-instance" },
     })) as { isError?: boolean; structuredContent?: { code?: string } };
 
     expect(result.isError).toBe(true);
@@ -223,7 +256,7 @@ describe("remote MCP session (/mcp, how ChatGPT connects) marks ctx.remote", () 
 
     const result = (await client.callTool({
       name: "project_select",
-      arguments: { projectId: "proj", reason: "remote normal select", preset: "full-write" },
+      arguments: { projectId: "proj", reason: "remote normal select", preset: "full-write", targetInstanceId: "inst_remote-test-instance" },
     })) as { isError?: boolean; structuredContent?: { lease?: { preset?: string } } };
 
     expect(result.isError).toBeFalsy();
@@ -250,11 +283,11 @@ describe("remote MCP session (/mcp, how ChatGPT connects) marks ctx.remote", () 
       const [officeSelection, homeSelection] = await Promise.all([
         client.callTool({
           name: "project_select",
-          arguments: { projectId: "proj", reason: "office task", preset: "full-write" },
+          arguments: { projectId: "proj", reason: "office task", preset: "full-write", targetInstanceId: "inst_remote-test-instance" },
         }),
         secondClient.callTool({
           name: "project_select",
-          arguments: { projectId: "home", reason: "home task", preset: "full-write" },
+          arguments: { projectId: "home", reason: "home task", preset: "full-write", targetInstanceId: "inst_remote-test-instance" },
         }),
       ]);
       expect((officeSelection as { structuredContent?: { lease?: { projectId?: string } } }).structuredContent?.lease?.projectId).toBe("proj");
@@ -263,11 +296,11 @@ describe("remote MCP session (/mcp, how ChatGPT connects) marks ctx.remote", () 
       const [officeSave, homeSave] = await Promise.all([
         client.callTool({
           name: "save_chatgpt_image",
-          arguments: { source: "path", sourcePath, destPath: ".chatgpt2codex/images/office.png" },
+          arguments: { source: "path", sourcePath, destPath: ".chatgpt2codex/images/office.png", targetInstanceId: "inst_remote-test-instance" },
         }),
         secondClient.callTool({
           name: "save_chatgpt_image",
-          arguments: { source: "path", sourcePath, destPath: ".chatgpt2codex/images/home.png" },
+          arguments: { source: "path", sourcePath, destPath: ".chatgpt2codex/images/home.png", targetInstanceId: "inst_remote-test-instance" },
         }),
       ]);
       expect((officeSave as { structuredContent?: { project?: string } }).structuredContent?.project).toBe("proj");

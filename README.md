@@ -155,6 +155,11 @@ an unmistakable **MCP instance name** (for example, `Office Mac` and `Home PC`).
 Saving settings restarts the local MCP process when it is running. Each install
 also gets a stable `instanceId`; the name and id are returned by `/healthz`, the
 Actions health endpoint, the `device_identity` tool, and every tool-call proof.
+Call `device_identity` first and pass its exact `instanceId` as
+`targetInstanceId` on every remote side-effecting call (project selection,
+edits, commands, E2E launches, image saves, task creation/cancel, and desktop
+control). Omitting it or sending another computer's ID is rejected before any
+local state or project file is touched.
 Separate remote MCP connections also keep their active project/lease state
 separate, so simultaneous tasks do not switch each other's selected project.
 After changing a name, refresh or reconnect the ChatGPT app if it has cached
