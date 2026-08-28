@@ -97,6 +97,8 @@ private let desktopLocalizationRows: [String: [String]] = [
     "autoApproveStatusMenu": ["Auto-approve: on", "자동 승인: 켜짐"],
     "autoApproveUnavailableMenu": ["Auto-approve needs an allowlisted app (CHATGPT2CODEX_CONTROL_ALLOWLIST)", "자동 승인을 사용하려면 허용 목록(CHATGPT2CODEX_CONTROL_ALLOWLIST) 앱이 필요합니다"],
     "computerUseSetting": ["Allow bounded Computer Use from ChatGPT", "ChatGPT의 제한형 Computer Use 허용"],
+    "computerUseProject": ["Computer Use project", "Computer Use 프로젝트"],
+    "computerUseProjectHint": ["Required when the workspace folder is a container such as ~/codes. Choose the actual project folder containing a project marker.", "~/codes 같은 작업공간 컨테이너를 선택한 경우 필요합니다. 프로젝트 표시 파일이 있는 실제 프로젝트 폴더를 선택하세요."],
     "computerUseApps": ["Allowed apps", "허용 앱"],
     "computerUseAppsHint": ["Comma-separated app names. Password managers, Terminal, and other sensitive apps remain blocked.", "쉼표로 앱 이름을 구분합니다. 암호 관리자, 터미널 등 민감 앱은 계속 차단됩니다."],
     "computerUseLimits": ["Grant limits", "권한 제한"],
@@ -105,7 +107,7 @@ private let desktopLocalizationRows: [String: [String]] = [
     "computerUseGrantFailedTitle": ["Computer Use grant failed", "Computer Use 권한 발급 실패"],
     "computerUseGrantOnMenu": ["Grant Computer Use now", "Computer Use 권한 지금 발급"],
     "computerUseGrantOffMenu": ["Revoke Computer Use grant", "Computer Use 권한 회수"],
-    "computerUseGrantUnavailableMenu": ["Configure Computer Use, an allowed app, and a project in Settings first.", "먼저 설정에서 Computer Use, 허용 앱, 프로젝트를 구성하세요."],
+    "computerUseGrantUnavailableMenu": ["Configure Computer Use, an allowed app, and a registered Computer Use project in Settings first.", "먼저 설정에서 Computer Use, 허용 앱, 등록된 Computer Use 프로젝트를 구성하세요."],
     "autoUpdatesMenu": ["Auto Check for Updates", "업데이트 자동 확인", "更新を自動確認", "自动检查更新", "自動檢查更新", "Buscar actualizaciones automáticamente", "Recherche auto des mises à jour", "Automatisch nach Updates suchen", "Verificar atualizações automaticamente", "Controlla aggiornamenti automaticamente", "Automatisch updates zoeken", "Automatycznie sprawdzaj aktualizacje", "Автопроверка обновлений", "Güncellemeleri otomatik denetle", "Tự động kiểm tra cập nhật", "Periksa pembaruan otomatis", "ตรวจอัปเดตอัตโนมัติ", "التحقق التلقائي من التحديثات", "अपडेट अपने-आप जांचें", "Автоматично перевіряти оновлення"],
     "openLocalHealth": ["Open Local Health", "로컬 상태 열기", "ローカルヘルスを開く", "打开本地健康检查", "開啟本機健康檢查", "Abrir estado local", "Ouvrir l'état local", "Lokalen Status öffnen", "Abrir saúde local", "Apri stato locale", "Lokale status openen", "Otwórz status lokalny", "Открыть локальный статус", "Yerel durumu aç", "Mở trạng thái cục bộ", "Buka kesehatan lokal", "เปิดสถานะภายใน", "فتح حالة الجهاز", "स्थानीय हेल्थ खोलें", "Відкрити локальний стан"],
     "openPublicHealth": ["Open Public Health", "공개 상태 열기", "公開ヘルスを開く", "打开公开健康检查", "開啟公開健康檢查", "Abrir estado público", "Ouvrir l'état public", "Öffentlichen Status öffnen", "Abrir saúde pública", "Apri stato pubblico", "Publieke status openen", "Otwórz status publiczny", "Открыть публичный статус", "Genel durumu aç", "Mở trạng thái công khai", "Buka kesehatan publik", "เปิดสถานะสาธารณะ", "فتح الحالة العامة", "सार्वजनिक हेल्थ खोलें", "Відкрити публічний стан"],
@@ -210,6 +212,7 @@ private final class ServiceController {
     private let environment = ProcessInfo.processInfo.environment
     private let defaults = UserDefaults.standard
     private let selectedProjectFolderKey = "selectedProjectFolder"
+    private let controlProjectFolderKey = "controlProjectFolder"
     private let displayNameKey = "displayName"
     private let publicHostnameKey = "publicHostname"
     private let cloudflaredTunnelNameKey = "cloudflaredTunnelName"
@@ -543,7 +546,9 @@ private final class ServiceController {
     /// the allowlist and sensitive-app policy before writing the grant.
     func issueComputerUseGrant() -> (ok: Bool, message: String) {
         guard computerUseEnabled else { return (false, "Computer Use is disabled") }
-        guard let root = activeProjectRoot else { return (false, "Select a registered project first") }
+        guard let root = computerUseProjectRoot else {
+            return (false, "Choose a registered Computer Use project folder (with .git or a project marker) in Settings first")
+        }
         let apps = controlAllowlistApps
         guard !apps.isEmpty else { return (false, "Add at least one allowed app") }
         do {
@@ -705,6 +710,24 @@ private final class ServiceController {
         return selectedProjectFolder.path
     }
 
+    /// Project root used for the local Computer Use grant. A workspace may be
+    /// a container (for example `~/codes`) with projects nested below it, so
+    /// this is deliberately separate from the workspace folder above.
+    var controlProjectFolder: URL? {
+        guard let value = defaults.string(forKey: controlProjectFolderKey), !value.isEmpty else {
+            return nil
+        }
+        return URL(fileURLWithPath: value)
+    }
+
+    var computerUseProjectRoot: String? {
+        let candidate = controlProjectFolder ?? selectedProjectFolder
+        guard let candidate, hasProjectMarker(candidate), isInsideWorkspace(candidate) else {
+            return nil
+        }
+        return candidate.path
+    }
+
     var projectDisplayName: String {
         selectedProjectFolder?.lastPathComponent ?? localized("defaultWorkspace")
     }
@@ -713,12 +736,26 @@ private final class ServiceController {
         defaults.set(url.path, forKey: selectedProjectFolderKey)
     }
 
+    func setControlProjectFolder(_ url: URL?) {
+        if let url {
+            defaults.set(url.path, forKey: controlProjectFolderKey)
+        } else {
+            defaults.removeObject(forKey: controlProjectFolderKey)
+        }
+    }
+
     func setDisplayName(_ value: String) {
         defaults.set(value.trimmingCharacters(in: .whitespacesAndNewlines), forKey: displayNameKey)
     }
 
     func clearSelectedProjectFolder() {
         defaults.removeObject(forKey: selectedProjectFolderKey)
+    }
+
+    func isInsideWorkspace(_ url: URL) -> Bool {
+        let workspacePath = URL(fileURLWithPath: workspace).standardizedFileURL.path
+        let candidatePath = url.standardizedFileURL.path
+        return candidatePath == workspacePath || candidatePath.hasPrefix(workspacePath + "/")
     }
 
     func setPublicHostname(_ value: String) {
@@ -1082,6 +1119,7 @@ private final class StatusBarAppDelegate: NSObject, NSApplicationDelegate, NSMen
     private weak var settingsHostField: NSTextField?
     private weak var settingsPortField: NSTextField?
     private weak var settingsComputerUseEnabled: NSButton?
+    private weak var settingsControlProjectField: NSTextField?
     private weak var settingsControlAppsField: NSTextField?
     private weak var settingsControlMinutesField: NSTextField?
     private weak var settingsControlMaxActionsField: NSTextField?
@@ -1374,7 +1412,7 @@ private final class StatusBarAppDelegate: NSObject, NSApplicationDelegate, NSMen
             grantItem = NSMenuItem(title: t("computerUseGrantOnMenu"), action: #selector(toggleComputerUseGrant), keyEquivalent: "")
         }
         grantItem.target = self
-        grantItem.isEnabled = grantStatus.enabled || (controller.computerUseEnabled && controller.activeProjectRoot != nil && !controller.controlAllowlistApps.isEmpty)
+        grantItem.isEnabled = grantStatus.enabled || (controller.computerUseEnabled && controller.computerUseProjectRoot != nil && !controller.controlAllowlistApps.isEmpty)
         if !grantItem.isEnabled { grantItem.toolTip = t("computerUseGrantUnavailableMenu") }
         menu.addItem(grantItem)
         menu.addItem(.separator())
@@ -1563,7 +1601,9 @@ private final class StatusBarAppDelegate: NSObject, NSApplicationDelegate, NSMen
         let localPortY = publicHintY + publicHintHeight + 18
         let portFieldY = localPortY - 4
         let computerUseY = localPortY + 42
-        let computerUseAppsY = computerUseY + 34
+        let computerUseProjectY = computerUseY + 34
+        let computerUseProjectHintY = computerUseProjectY + 30
+        let computerUseAppsY = computerUseProjectHintY + 30
         let computerUseHintY = computerUseAppsY + 30
         let computerUseLimitsY = computerUseHintY + 34
         let actionRow1Y = computerUseLimitsY + 44
@@ -1701,6 +1741,24 @@ private final class StatusBarAppDelegate: NSObject, NSApplicationDelegate, NSMen
         computerUse.state = controller.computerUseEnabled ? .on : .off
         settingsComputerUseEnabled = computerUse
         content.addSubview(computerUse)
+
+        content.addSubview(label(t("computerUseProject"), x: 28, y: computerUseProjectY + 4, width: 150))
+        let controlProjectField = field(
+            controller.controlProjectFolder?.path ?? "",
+            x: 190,
+            y: computerUseProjectY,
+            width: 230,
+            placeholder: controller.activeProjectRoot ?? "Select project folder"
+        )
+        controlProjectField.isEditable = false
+        controlProjectField.isSelectable = true
+        controlProjectField.focusRingType = .none
+        controlProjectField.toolTip = t("computerUseProjectHint")
+        settingsControlProjectField = controlProjectField
+        content.addSubview(controlProjectField)
+        content.addSubview(button(t("browse"), x: 428, y: computerUseProjectY - 1, width: 84, action: #selector(browseComputerUseProjectFromSettings)))
+        content.addSubview(hint(t("computerUseProjectHint"), x: 190, y: computerUseProjectHintY, width: 322, height: 26))
+
         content.addSubview(label(t("computerUseApps"), x: 28, y: computerUseAppsY + 4, width: 150))
         let controlAppsField = field(controller.controlAllowlistApps.joined(separator: ", "), x: 190, y: computerUseAppsY, width: 322, placeholder: "Safari, TextEdit")
         settingsControlAppsField = controlAppsField
@@ -1786,6 +1844,7 @@ private final class StatusBarAppDelegate: NSObject, NSApplicationDelegate, NSMen
               let hostField = settingsHostField,
               let portField = settingsPortField,
               let computerUse = settingsComputerUseEnabled,
+              let controlProjectField = settingsControlProjectField,
               let controlAppsField = settingsControlAppsField,
               let controlMinutesField = settingsControlMinutesField,
               let controlMaxActionsField = settingsControlMaxActionsField
@@ -1804,6 +1863,21 @@ private final class StatusBarAppDelegate: NSObject, NSApplicationDelegate, NSMen
                 return
             }
             controller.setSelectedProjectFolder(projectURL)
+        }
+        let controlProjectPath = controlProjectField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        if controlProjectPath.isEmpty {
+            controller.setControlProjectFolder(nil)
+        } else {
+            let controlProjectURL = URL(fileURLWithPath: controlProjectPath)
+            guard controller.ensureWorkspaceDirectory(controlProjectURL), controller.hasProjectMarker(controlProjectURL), controller.isInsideWorkspace(controlProjectURL) else {
+                let invalidProjectAlert = NSAlert()
+                invalidProjectAlert.messageText = t("projectMarkerTitle")
+                invalidProjectAlert.informativeText = t("computerUseProjectHint")
+                invalidProjectAlert.addButton(withTitle: t("ok"))
+                invalidProjectAlert.runModal()
+                return
+            }
+            controller.setControlProjectFolder(controlProjectURL)
         }
         controller.setLaunchAtLogin(launchAtLogin.state == .on)
         controller.setStartMCPOnLaunch(startOnLaunch.state == .on)
@@ -1852,6 +1926,26 @@ private final class StatusBarAppDelegate: NSObject, NSApplicationDelegate, NSMen
             guard let self, response == .OK, let url = panel.url else { return }
             _ = self.controller.ensureWorkspaceDirectory(url)
             self.settingsProjectField?.stringValue = url.path
+        }
+        if let window = settingsWindow {
+            panel.beginSheetModal(for: window, completionHandler: applySelection)
+        } else {
+            panel.begin(completionHandler: applySelection)
+        }
+    }
+
+    @objc private func browseComputerUseProjectFromSettings() {
+        let panel = NSOpenPanel()
+        panel.title = t("computerUseProject")
+        panel.prompt = t("select")
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = controller.controlProjectFolder ?? controller.selectedProjectFolder ?? URL(fileURLWithPath: controller.workspace)
+        NSApp.activate(ignoringOtherApps: true)
+        let applySelection: (NSApplication.ModalResponse) -> Void = { [weak self] response in
+            guard let self, response == .OK, let url = panel.url else { return }
+            self.settingsControlProjectField?.stringValue = url.path
         }
         if let window = settingsWindow {
             panel.beginSheetModal(for: window, completionHandler: applySelection)

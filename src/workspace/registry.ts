@@ -26,6 +26,45 @@ const PROJECT_MARKER_FILES = [
   ".chatgpt2codex",
 ];
 
+/**
+ * A workspace can be a lightweight container (for example `~/codes`) rather
+ * than a project itself. Keep recursive discovery bounded and avoid walking
+ * dependency/build trees that can contain thousands of directories.
+ *
+ * `depth` is the number of descendant directory levels below the workspace
+ * root. The default therefore discovers `codes/project` and
+ * `codes/group/project`, while a project directory stops traversal at its
+ * marker boundary.
+ */
+export const DEFAULT_SCAN_DEPTH = 2;
+export const MAX_SCAN_DEPTH = 5;
+const SKIP_DIRECTORY_NAMES = new Set([
+  ".git",
+  "node_modules",
+  "vendor",
+  ".venv",
+  "venv",
+  "__pycache__",
+  "dist",
+  "build",
+  "target",
+  ".next",
+  ".cache",
+  "coverage",
+]);
+
+export interface ScanWorkspaceOptions {
+  /** Number of child-directory levels to inspect below `root` (0-5). */
+  depth?: number;
+  /** Include dot-prefixed directories, except protected dependency/build trees. */
+  includeHidden?: boolean;
+}
+
+function effectiveScanDepth(value: number | undefined): number {
+  if (value === undefined || !Number.isFinite(value)) return DEFAULT_SCAN_DEPTH;
+  return Math.min(MAX_SCAN_DEPTH, Math.max(0, Math.floor(value)));
+}
+
 async function pathExists(p: string): Promise<boolean> {
   try {
     await fs.access(p);
@@ -101,25 +140,17 @@ function slugify(name: string): string {
  * folders) and build registry entries (PRD §8.1 workspace_list_projects,
  * §10 registry shape).
  */
-export async function scanWorkspace(root: string): Promise<ProjectRegistryEntry[]> {
-  let dirents: import("node:fs").Dirent[];
-  try {
-    dirents = await fs.readdir(root, { withFileTypes: true });
-  } catch (err) {
-    throw new DomainError(
-      ErrorCode.WORKSPACE_NOT_READY,
-      `Cannot read workspace root: ${(err as Error).message}`,
-      { root },
-    );
-  }
-
+export async function scanWorkspace(root: string, options: ScanWorkspaceOptions = {}): Promise<ProjectRegistryEntry[]> {
+  const workspaceRoot = path.resolve(root);
+  const maxDepth = effectiveScanDepth(options.depth);
+  const includeHidden = options.includeHidden === true;
   const entries: ProjectRegistryEntry[] = [];
   const nowIso = new Date().toISOString();
 
-  const pushProject = async (dir: string, name: string): Promise<void> => {
+  const pushProject = async (dir: string, name: string, relativePath: string): Promise<boolean> => {
     const isGit = await isGitRepo(dir);
     const hasMarker = isGit || (await hasAnyProjectMarker(dir));
-    if (!hasMarker) return;
+    if (!hasMarker) return false;
 
     const [branch, dirty, packageHints, hasAgentsMd, hasCodeBrain] = await Promise.all([
       isGit ? getBranch(dir) : Promise.resolve(undefined),
@@ -132,7 +163,13 @@ export async function scanWorkspace(root: string): Promise<ProjectRegistryEntry[
     ]);
 
     const projectId = slugify(name);
-    const aliases = Array.from(new Set([name, projectId, name.toLowerCase()].map((a) => a)));
+    const aliases = Array.from(
+      new Set(
+        [name, projectId, name.toLowerCase(), relativePath]
+          .filter((alias) => alias.length > 0 && alias !== ".")
+          .map((alias) => alias),
+      ),
+    );
 
     entries.push({
       projectId,
@@ -146,17 +183,56 @@ export async function scanWorkspace(root: string): Promise<ProjectRegistryEntry[
       packageHints,
       lastSeenAt: nowIso,
     });
+    return true;
   };
 
-  await pushProject(root, path.basename(root));
+  const shouldDescend = (dirent: import("node:fs").Dirent): boolean => {
+    if (!dirent.isDirectory() || SKIP_DIRECTORY_NAMES.has(dirent.name)) return false;
+    if (!includeHidden && dirent.name.startsWith(".")) return false;
+    return true;
+  };
 
-  for (const dirent of dirents) {
-    if (!dirent.isDirectory()) continue;
-    if (dirent.name.startsWith(".")) continue; // skip hidden/system dirs
+  const readChildren = async (dir: string, isRoot: boolean): Promise<import("node:fs").Dirent[]> => {
+    try {
+      return await fs.readdir(dir, { withFileTypes: true });
+    } catch (err) {
+      if (isRoot) {
+        throw new DomainError(
+          ErrorCode.WORKSPACE_NOT_READY,
+          `Cannot read workspace root: ${(err as Error).message}`,
+          { root: workspaceRoot },
+        );
+      }
+      // A single unreadable child must not make the rest of a workspace
+      // unusable (permissions and broken mounts are common in monorepos).
+      return [];
+    }
+  };
 
-    const dir = path.join(root, dirent.name);
-    await pushProject(dir, dirent.name);
-  }
+  const scanDirectory = async (
+    dir: string,
+    name: string,
+    relativePath: string,
+    level: number,
+    isRoot: boolean,
+    rootChildren?: import("node:fs").Dirent[],
+  ): Promise<void> => {
+    // A marker directory is a project boundary. This avoids accidentally
+    // registering package.json files inside node_modules or nested fixtures.
+    const isProject = await pushProject(dir, name, relativePath);
+    if (isProject || level >= maxDepth) return;
+
+    const children = rootChildren ?? (await readChildren(dir, isRoot));
+    children.sort((a, b) => a.name.localeCompare(b.name));
+    for (const dirent of children) {
+      if (!shouldDescend(dirent)) continue;
+      const childRelativePath = relativePath === "." ? dirent.name : path.join(relativePath, dirent.name);
+      await scanDirectory(path.join(dir, dirent.name), dirent.name, childRelativePath, level + 1, false);
+    }
+  };
+
+  const rootChildren = await readChildren(workspaceRoot, true);
+  await scanDirectory(workspaceRoot, path.basename(workspaceRoot), ".", 0, true, rootChildren);
 
   return entries;
 }

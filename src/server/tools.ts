@@ -15,7 +15,7 @@ import {
   type ToolContext,
   type ToolResult,
 } from "../types.js";
-import { scanWorkspace, findProject } from "../workspace/registry.js";
+import { DEFAULT_SCAN_DEPTH, scanWorkspace, findProject } from "../workspace/registry.js";
 import { makeLease } from "../workspace/project-select.js";
 import { requireProjectLease } from "../workspace/lease-guard.js";
 import { codeSearch } from "../code/search.js";
@@ -57,6 +57,7 @@ import { assertTargetInstance, instanceIdForContext, isTargetInstanceTool, TARGE
 import { clearKill } from "../control/queue.js";
 import {
   handleComputerActionStatus,
+  handleComputerAccessStatus,
   handleComputerKillSwitch,
   handleComputerRequestAction,
   handleComputerScreenshot,
@@ -1119,7 +1120,7 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
               "Report: include changed files, verification command/output, proof artifact, and remaining risk without claiming unstaged work is committed.",
             ],
             toolSurfaceMap: {
-              discover: ["device_identity", "workspace_list_projects", "workspace_refresh_index", "workspace_get_project", "project_select", "project_bootstrap"],
+              discover: ["device_identity", "workspace_list_projects", "workspace_refresh_index", "workspace_get_project", "project_select", "project_bootstrap", "computer_access_status"],
               inspect: ["project_rules", "project_status", "repo_status", "repo_diff_summary", "code_search", "file_read_slice"],
               modify: ["file_apply_patch", "file_create", "change_and_verify", "local_shell_run"],
               verify: ["command_list", "local_shell_run", "change_and_verify", "task_execute", "task_start", "task_status", "task_result", "e2e_test_and_show_screenshot", "e2e_start_server", "e2e_run_command", "e2e_screenshot"],
@@ -1135,6 +1136,7 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
             ],
             desktopControlModel: [
               "Off by default; expose control tools to ChatGPT only when the owner opts in through CHATGPT2CODEX_CONTROL_CHATGPT.",
+              "Call computer_access_status first when Computer Use reports a missing project permission; it shows the active project, local grant, instance binding, allowlist, and the next safe step.",
               "Arm explicitly with project_select preset=control; keep kill switch available in the same owner-controlled surface.",
               "Capture evidence with app/window screenshots, not the user's active ChatGPT browser tab as the app under test.",
               "Block sensitive apps and re-check frontmost target immediately before synthetic input.",
@@ -1827,23 +1829,33 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
     "workspace_refresh_index",
     {
       title: "Refresh workspace index",
-      description: "Rescan the workspace root to refresh the project registry.",
+      description:
+        "Rescan the workspace root to refresh the project registry. Container workspaces are searched up to two directory levels by default; project-marker folders stop further traversal.",
       annotations: LOCAL_STATE_ANNOTATIONS,
       _meta: chatGptToolMeta("Refreshing workspace index...", "Workspace index refreshed"),
       inputSchema: {
-        depth: z.number().int().optional(),
+        depth: z.number().int().min(1).max(5).optional(),
         includeHidden: z.boolean().optional(),
       },
     },
     async (input) => {
       return withErrorMapping(ctx, "workspace_refresh_index", input, async () => {
-        const scanned = await scanWorkspace(ctx.workspaceRoot);
+        const scanned = await scanWorkspace(ctx.workspaceRoot, {
+          depth: input.depth,
+          includeHidden: input.includeHidden,
+        });
         ctx.registry.splice(0, ctx.registry.length, ...scanned);
         await ctx.store.saveProjects(scanned);
         const updatedAt = Date.now();
         return makeResult(
-          { count: scanned.length, updatedAt },
-          `Refreshed workspace index: ${scanned.length} project(s).`,
+          {
+            count: scanned.length,
+            updatedAt,
+            depth: input.depth ?? DEFAULT_SCAN_DEPTH,
+            includeHidden: input.includeHidden === true,
+            projects: scanned.map((entry) => ({ projectId: entry.projectId, name: entry.name, root: entry.root })),
+          },
+          `Refreshed workspace index: ${scanned.length} project(s) (depth=${input.depth ?? DEFAULT_SCAN_DEPTH}).`,
         );
       });
     },
@@ -1870,7 +1882,15 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
     async (input) => {
       return withErrorMapping(ctx, "project_select", input, async () => {
         const entries = await currentRegistry(ctx);
-        const result = findProject(entries, { projectId: input.projectId, name: input.projectId });
+        // `projectId` is the public field for historical clients, but a
+        // nested project can also be selected by its workspace-relative alias
+        // (for example `100_xxx/projectname`). Try the canonical id first and
+        // then resolve that same value as a name/alias without weakening exact
+        // project-id matching elsewhere.
+        let result = findProject(entries, { projectId: input.projectId });
+        if (!result.ok && result.reason === "not_found") {
+          result = findProject(entries, { name: input.projectId });
+        }
         if (!result.ok) {
           if (result.reason === "ambiguous") {
             throw new DomainError(ErrorCode.AMBIGUOUS_PROJECT, "Multiple projects match", {
@@ -3753,6 +3773,23 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
   // (isControlChatGptExposed) — the public-product default keeps both closed,
   // registering them here alone never exposes them to ChatGPT.
   // -------------------------------------------------------------------
+  // A read-only diagnostic remains available even when the action tools are
+  // hidden from ChatGPT. It makes the common "open a project with permission"
+  // failure actionable by showing the selected project, local grant, instance
+  // binding, allowlist, and the exact next step.
+  registerTool(
+    "computer_access_status",
+    {
+      title: "Check Computer Use access",
+      description:
+        "Read-only diagnostic for Computer Use. Reports the selected project, local Control Grant, MCP instance, allowlisted apps, and the next authorization step; it never captures a screen or sends input.",
+      annotations: READ_ONLY_ANNOTATIONS,
+      _meta: chatGptToolMeta("Checking Computer Use access...", "Computer Use access loaded"),
+      inputSchema: {},
+    },
+    async () => handleComputerAccessStatus(ctx),
+  );
+
   if (isControlEnabled()) {
     const controlTargetSchema = z
       .object({

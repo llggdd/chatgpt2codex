@@ -193,7 +193,7 @@ export async function authorizeControlGrant(
   if (!grant) {
     throw new DomainError(
       ErrorCode.LEASE_REQUIRED,
-      "No active local Control Grant. Grant Computer Use from the Mac status bar or local CLI first.",
+      "No active local Control Grant for this MCP instance. Grant Computer Use from the Mac status bar or local CLI first, then call computer_access_status to verify the project and instance binding.",
     );
   }
   assertGrantScope(grant, input);
