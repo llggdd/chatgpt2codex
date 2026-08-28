@@ -239,7 +239,7 @@ describe("Custom GPT action bridge", () => {
 
     expect(res.status).toBe(200);
     expect(body.openapi).toBe("3.1.0");
-    expect(body.info.version).toBe("0.1.6");
+    expect(body.info.version).toBe("0.2.0");
     expect(body.info.description).toContain("source editing");
     expect(body.info.description).toContain("cannot write /Users/");
     expect(body.info.description).toContain("30 operations");
@@ -309,7 +309,7 @@ describe("Custom GPT action bridge", () => {
     );
   });
 
-  it("requires the exact instance target before a remote action mutation", async () => {
+  it("keeps explicit instance targets strict while allowing legacy clients on a bound action server", async () => {
     const server = await startApp(makeCtx(stateDir, projectRoot));
     stop = server.stop;
 
@@ -319,12 +319,11 @@ describe("Custom GPT action bridge", () => {
     });
     const missing = (await missingRes.json()) as {
       ok: boolean;
-      structuredContent?: { code?: string; details?: { actual?: string } };
+      structuredContent?: { code?: string; details?: { actual?: string }; lease?: { projectId?: string } };
     };
     expect(missingRes.status).toBe(200);
-    expect(missing.ok).toBe(false);
-    expect(missing.structuredContent?.code).toBe("TARGET_INSTANCE_REQUIRED");
-    expect(missing.structuredContent?.details?.actual).toBe(TEST_INSTANCE_ID);
+    expect(missing.ok).toBe(true);
+    expect(missing.structuredContent?.lease?.projectId).toBe("proj");
 
     const wrongRes = await postAction(server.baseUrl, "/actions/project-select", {
       projectId: "proj",

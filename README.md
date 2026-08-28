@@ -168,8 +168,12 @@ Actions health endpoint, the `device_identity` tool, and every tool-call proof.
 Call `device_identity` first and pass its exact `instanceId` as
 `targetInstanceId` on every remote side-effecting call (project selection,
 edits, commands, E2E launches, image saves, task creation/cancel, and desktop
-control). Omitting it or sending another computer's ID is rejected before any
-local state or project file is touched.
+control). New clients should send it explicitly; a bound HTTP/MCP endpoint
+also infers its own instance for legacy clients whose cached schema does not
+yet expose `device_identity` or `targetInstanceId`. An explicitly supplied
+different computer's ID is still rejected before any local state or project
+file is touched. Refresh or reconnect the `code-x` registration after an
+upgrade so it loads the current tool schema.
 Separate remote MCP connections also keep their active project/lease state
 separate, so simultaneous tasks do not switch each other's selected project.
 After changing a name, refresh or reconnect the ChatGPT app if it has cached

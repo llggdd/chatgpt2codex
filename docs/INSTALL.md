@@ -56,9 +56,13 @@ ChatGPT To Codex는 내 Mac 또는 Windows PC에서 실행되는 로컬 코딩 �
 12. 승인 화면이 나오면 ChatGPT To Codex 앱에서 Owner Token을 복사해 입력합니다.
 
 여러 컴퓨터가 연결된 상태에서는 먼저 `device_identity`를 호출하고, 응답의
-정확한 `instanceId`를 모든 원격 변경 작업의 `targetInstanceId`에 넣어야 합니다.
-값이 없거나 다른 컴퓨터의 ID이면 파일 변경, 명령 실행, E2E, 이미지 저장,
-작업 큐, Computer Use가 실행 전에 거부됩니다.
+정확한 `instanceId`를 모든 원격 변경 작업의 `targetInstanceId`에 넣는 것이
+권장됩니다. 예전 스키마를 캐시해 `device_identity`나 `targetInstanceId`를
+아직 노출하지 않는 클라이언트도, 연결 자체가 특정 MCP 인스턴스에 바인딩되어
+있으면 서버가 그 인스턴스를 기본 대상으로 사용합니다. 다른 컴퓨터의 ID를
+명시적으로 보내면 파일 변경, 명령 실행, E2E, 이미지 저장, 작업 큐,
+Computer Use 실행 전에 계속 거부됩니다. 업그레이드 후에는 `code-x`
+등록을 새로고침하거나 다시 연결해 최신 도구 목록을 받으세요.
 
 ### E2E 스크린샷 사용
 
@@ -186,8 +190,10 @@ and tool-call proofs.
 Call `device_identity` first and copy its exact `instanceId` into
 `targetInstanceId` on every remote mutation. Project selection, file edits,
 commands, E2E launches, image saves, task creation/cancel, and Computer Use
-are rejected before execution when the field is missing or belongs to another
-computer.
+accept the bound endpoint's instance for legacy clients that do not expose the
+field yet; an explicitly supplied ID belonging to another computer is rejected
+before execution. Refresh or reconnect the `code-x` registration after an
+upgrade so the current `device_identity` tool and target field appear.
 Remote MCP connections keep their active project and lease state isolated, so
 multiple simultaneous ChatGPT tasks can select different projects safely.
 If ChatGPT keeps showing the old metadata after a rename, refresh or reconnect

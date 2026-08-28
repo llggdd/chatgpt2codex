@@ -68,7 +68,9 @@ Troubleshooting:
   the name and stable instance id, which makes the active computer explicit.
 - Before any remote edit, command, E2E, image save, queued task, or Computer Use
   call, invoke `device_identity` and pass that exact `instanceId` as
-  `targetInstanceId`; a missing or different id is rejected before execution.
+  `targetInstanceId`; bound endpoints infer the id for legacy clients that do
+  not expose the field yet, while a different explicit id is rejected before
+  execution. Refresh the MCP registration after an upgrade.
 - Remote MCP connections keep their project/lease selection separate. If two
   workflows share one connection, pass an explicit `projectId` in each call.
 - Container workspaces are scanned two levels deep by default, so layouts such

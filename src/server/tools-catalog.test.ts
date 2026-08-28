@@ -204,6 +204,24 @@ describe("tool catalog", () => {
     expect(result.structuredContent?.chatgpt2codexToolCall?.ok).toBe(true);
   });
 
+  it("keeps device_identity visible in the MCP tools/list response", async () => {
+    const server = await createServer(makeCtx());
+    const handler = (
+      server.server as unknown as {
+        _requestHandlers?: Map<
+          string,
+          (request: { method: string; params: Record<string, never> }) => Promise<{
+            tools: Array<{ name: string; inputSchema?: { properties?: Record<string, unknown> } }>;
+          }>
+        >;
+      }
+    )._requestHandlers?.get("tools/list");
+    const listed = await handler?.({ method: "tools/list", params: {} });
+
+    expect(listed?.tools.map((tool) => tool.name)).toContain("device_identity");
+    expect(listed?.tools.find((tool) => tool.name === "project_select")?.inputSchema?.properties?.targetInstanceId).toBeDefined();
+  });
+
   describe("ChatGPT confirm-model exposure (CHATGPT2CODEX_CONTROL_CHATGPT)", () => {
     afterEach(() => {
       delete process.env.CHATGPT2CODEX_CONTROL_CHATGPT;

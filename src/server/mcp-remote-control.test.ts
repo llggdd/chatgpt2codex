@@ -201,7 +201,7 @@ describe("remote MCP session (/mcp, how ChatGPT connects) marks ctx.remote", () 
     await fs.rm(projectRoot, { recursive: true, force: true });
   }, 15_000);
 
-  it("requires and validates an explicit instance target before remote mutations", async () => {
+  it("accepts legacy remote clients without an instance field but still rejects a wrong explicit target", async () => {
     const ctx = makeCtx(stateDir, projectRoot);
     const app = await startApp(ctx);
     stop = app.stop;
@@ -212,10 +212,9 @@ describe("remote MCP session (/mcp, how ChatGPT connects) marks ctx.remote", () 
     const missing = (await client.callTool({
       name: "project_select",
       arguments: { projectId: "proj", reason: "missing instance target", preset: "full-write" },
-    })) as { isError?: boolean; structuredContent?: { code?: string; details?: { actual?: string } } };
-    expect(missing.isError).toBe(true);
-    expect(missing.structuredContent?.code).toBe("TARGET_INSTANCE_REQUIRED");
-    expect(missing.structuredContent?.details?.actual).toBe("inst_remote-test-instance");
+    })) as { isError?: boolean; structuredContent?: { lease?: { projectId?: string } } };
+    expect(missing.isError).toBeFalsy();
+    expect(missing.structuredContent?.lease?.projectId).toBe("proj");
 
     const wrong = (await client.callTool({
       name: "project_select",

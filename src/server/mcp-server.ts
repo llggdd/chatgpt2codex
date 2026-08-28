@@ -20,13 +20,15 @@ export async function createServer(ctx: ToolContext): Promise<McpServer> {
   const server = new McpServer(
     {
       name: mcpServerName(identity),
-      version: "0.1.1",
+      // Keep the protocol version aligned with the packaged application so
+      // MCP clients that cache a server's tool schema can detect upgrades.
+      version: "0.2.0",
     },
     {
       // Keep the protocol-level instruction free of user-supplied display
       // names; the human label remains available as structured data through
       // device_identity and tool-call proofs.
-      instructions: `Connected ChatGPT To Codex instance ${mcpServerName(identity)}. Call device_identity before selecting a project when multiple installations are connected.`,
+      instructions: `Connected ChatGPT To Codex instance ${mcpServerName(identity)}. Call device_identity before selecting a project when multiple installations are connected and pass its instanceId as targetInstanceId on mutations when available; bound remote connections infer their own id for legacy clients with an older cached schema.`,
     },
   );
 

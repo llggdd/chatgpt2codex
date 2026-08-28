@@ -113,7 +113,7 @@ const ACTION_ROUTES: ActionRoute[] = [
     operationId: "project_select",
     summary: "Select the active local project",
     description:
-      "Selects and leases the project. GPT Actions default to preset=full-write when preset is omitted, so source edits can be applied directly through chatgpt2codex instead of returning copy/paste scripts. Use preset=image-only only for image-only saves. Remote calls must include the exact targetInstanceId returned by device_identity.",
+      "Selects and leases the project. GPT Actions default to preset=full-write when preset is omitted, so source edits can be applied directly through chatgpt2codex instead of returning copy/paste scripts. Use preset=image-only only for image-only saves. Remote calls should include the exact targetInstanceId returned by device_identity; bound endpoints infer it for legacy clients.",
     schema: "ProjectSelectInput",
   },
   {
@@ -194,7 +194,7 @@ const ACTION_ROUTES: ActionRoute[] = [
     tool: "file_apply_patch",
     operationId: "file_apply_patch",
     summary: "Apply a project file patch",
-    description: "Apply a Codex-style patch directly to the selected local project. Requires project_select preset=full-write; do not return shell scripts for the user to paste. Remote calls must include the exact targetInstanceId returned by device_identity.",
+    description: "Apply a Codex-style patch directly to the selected local project. Requires project_select preset=full-write; do not return shell scripts for the user to paste. Remote calls should include the exact targetInstanceId returned by device_identity; bound endpoints infer it for legacy clients.",
     schema: "FileApplyPatchInput",
   },
   {
@@ -202,7 +202,7 @@ const ACTION_ROUTES: ActionRoute[] = [
     tool: "file_create",
     operationId: "file_create",
     summary: "Create a project file",
-    description: "Create or overwrite a project-confined file directly through chatgpt2codex. Requires project_select preset=full-write. Remote calls must include the exact targetInstanceId returned by device_identity.",
+    description: "Create or overwrite a project-confined file directly through chatgpt2codex. Requires project_select preset=full-write. Remote calls should include the exact targetInstanceId returned by device_identity; bound endpoints infer it for legacy clients.",
     schema: "FileCreateInput",
   },
   {
@@ -210,7 +210,7 @@ const ACTION_ROUTES: ActionRoute[] = [
     tool: "change_and_verify",
     operationId: "change_and_verify",
     summary: "Apply and verify a change",
-    description: "Apply a hash-guarded patch, create a checkpoint, select safe tests from changed files, and return evidence. Remote calls must include the exact targetInstanceId returned by device_identity.",
+    description: "Apply a hash-guarded patch, create a checkpoint, select safe tests from changed files, and return evidence. Remote calls should include the exact targetInstanceId returned by device_identity; bound endpoints infer it for legacy clients.",
     schema: "ChangeAndVerifyInput",
   },
   {
@@ -226,7 +226,7 @@ const ACTION_ROUTES: ActionRoute[] = [
     tool: "command_run",
     operationId: "command_run",
     summary: "Run allowlisted project command",
-    description: "Run an allowlisted project command through chatgpt2codex. Remote calls must include the exact targetInstanceId returned by device_identity.",
+    description: "Run an allowlisted project command through chatgpt2codex. Remote calls should include the exact targetInstanceId returned by device_identity; bound endpoints infer it for legacy clients.",
     schema: "CommandRunInput",
   },
   {
@@ -234,7 +234,7 @@ const ACTION_ROUTES: ActionRoute[] = [
     tool: "local_shell_run",
     operationId: "local_shell_run",
     summary: "Run local project shell",
-    description: "Run a guarded local shell command inside the project through chatgpt2codex. Network/destructive intents remain approval-gated by the tool. Remote calls must include the exact targetInstanceId returned by device_identity.",
+    description: "Run a guarded local shell command inside the project through chatgpt2codex. Network/destructive intents remain approval-gated by the tool. Remote calls should include the exact targetInstanceId returned by device_identity; bound endpoints infer it for legacy clients.",
     schema: "LocalShellRunInput",
   },
   {
@@ -422,9 +422,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 /**
  * The dedicated Actions document is hand-authored for readability, while
- * MCP tool schemas are generated from zod. Add the same hard target contract
- * to every side-effecting dedicated route at the final OpenAPI boundary so a
- * client generated from the document cannot omit the instance pin.
+ * MCP tool schemas are generated from zod. Add the same explicit target field
+ * to every side-effecting dedicated route at the final OpenAPI boundary so
+ * current clients can pin the instance. The runtime still infers a bound
+ * endpoint's own id for legacy clients with a cached schema.
  */
 function withRequiredActionInstanceTargets(schemas: Record<string, unknown>): Record<string, unknown> {
   for (const route of openApiActionRoutes()) {
@@ -441,7 +442,8 @@ function withRequiredActionInstanceTargets(schemas: Record<string, unknown>): Re
         ...properties,
         targetInstanceId: {
           type: "string",
-          description: "Required for this side-effecting route. Copy the exact instanceId returned by device_identity.",
+          description:
+            "Copy the exact instanceId returned by device_identity. Bound MCP/Actions endpoints infer their own id for legacy clients that lack this field.",
         },
       },
       required: Array.from(new Set([...required, "targetInstanceId"])),
@@ -683,7 +685,7 @@ function openApiSpec(publicOrigin: string, identity = fallbackDeviceIdentity()):
   for (const route of openApiActionRoutes()) {
     const remoteTargetGuidance =
       isTargetInstanceTool(route.tool) && !route.description.includes("targetInstanceId")
-        ? " Remote calls must include the exact targetInstanceId returned by device_identity."
+        ? " Remote calls should include the exact targetInstanceId returned by device_identity; bound endpoints infer it for legacy clients."
         : "";
     paths[route.path] = {
       post: {
@@ -713,9 +715,9 @@ function openApiSpec(publicOrigin: string, identity = fallbackDeviceIdentity()):
     openapi: "3.1.0",
     info: {
       title: `${identity.displayName} Custom GPT Actions`,
-      version: "0.1.6",
+      version: "0.2.0",
       description:
-        "OpenAPI bridge for Custom GPTs. This does not call OpenAI Codex or spend Codex quota; ChatGPT drives local coding actions through chatgpt2codex. Hard gate: do not claim local project inspection, edits, tests, commits, or image saves unless a current-turn ActionToolResponse includes ok=true and toolCall.namespace=ChatGPT_To_Codex. If the active ChatGPT app was Image Generation/ImageGen, image_gen, python_user_visible, or a text-only answer, no chatgpt2codex local work happened; reselect/reconnect ChatGPT To Codex or refresh this Action schema. For /goal or broad implementation prompts, call goal_intake or goal_loop immediately before long reasoning. This compact schema stays under 30 operations including action_health and call_tool, and exposes exact tool names such as workspace_list_projects, project_select, project_bootstrap, code_search, file_read_slice, file_apply_patch, file_create, change_and_verify, task_execute/task_start/task_status/task_result, local_shell_run, and e2e_test_and_show_screenshot for source editing, queued verification, and E2E proof. It avoids broad context-pack actions that ChatGPT safety may block; inspect with code_search followed by narrow file_read_slice calls instead. It also exposes E2E server/app launch plus screenshot capture. Hidden tools remain reachable through call_tool. ChatGPT's sandbox cannot write /Users/... directly; use these actions. Call device_identity first and pass the exact targetInstanceId on every remote side-effecting call; missing or mismatched targets are rejected before local state changes. For generated images, use a Share/Copy Link/content URL, copied image, download, or local path with save_chatgpt_image/save_chatgpt_image_from_url.",
+        "OpenAPI bridge for Custom GPTs. This does not call OpenAI Codex or spend Codex quota; ChatGPT drives local coding actions through chatgpt2codex. Hard gate: do not claim local project inspection, edits, tests, commits, or image saves unless a current-turn ActionToolResponse includes ok=true and toolCall.namespace=ChatGPT_To_Codex. If the active ChatGPT app was Image Generation/ImageGen, image_gen, python_user_visible, or a text-only answer, no chatgpt2codex local work happened; reselect/reconnect ChatGPT To Codex or refresh this Action schema. For /goal or broad implementation prompts, call goal_intake or goal_loop immediately before long reasoning. This compact schema stays under 30 operations including action_health and call_tool, and exposes exact tool names such as workspace_list_projects, project_select, project_bootstrap, code_search, file_read_slice, file_apply_patch, file_create, change_and_verify, task_execute/task_start/task_status/task_result, local_shell_run, and e2e_test_and_show_screenshot for source editing, queued verification, and E2E proof. It avoids broad context-pack actions that ChatGPT safety may block; inspect with code_search followed by narrow file_read_slice calls instead. It also exposes E2E server/app launch plus screenshot capture. Hidden tools remain reachable through call_tool. ChatGPT's sandbox cannot write /Users/... directly; use these actions. Call device_identity first and pass the exact targetInstanceId on every remote side-effecting call; bound endpoints infer it for legacy clients that lack the field, while an explicitly mismatched target is rejected before local state changes. For generated images, use a Share/Copy Link/content URL, copied image, download, or local path with save_chatgpt_image/save_chatgpt_image_from_url.",
       "x-chatgpt2codex-tool-proof": TOOL_AVAILABILITY_GATE,
       "x-chatgpt2codex-openapi-operation-count": Object.keys(paths).length,
       "x-chatgpt2codex-tool-names": openApiActionRoutes().map((route) => route.tool),
