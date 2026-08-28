@@ -91,6 +91,23 @@ views. The one-shot `e2e_test_and_show_screenshot` action returns inline
 `imageMarkdown` results so you can inspect the screen without digging through
 local folders.
 
+For faster coding loops, use `project_bootstrap` to collect project rules,
+status, commands, and key files in one read-only call. Use
+`change_and_verify` for a hash-guarded patch plus automatic changed-file test
+selection. For a single orchestrated job, `task_execute` stores a goal and can
+queue it with an explicit guarded command/shell/E2E spec; a goal-only call
+returns the next safe planning steps. Lower-level jobs can use
+`task_start`. Poll either with `task_status` / `task_result`; reads may run in
+parallel while writes are serialized per project. Set
+`CHATGPT2CODEX_MAX_CONCURRENT_TASKS=1..8` before starting the runtime to tune
+the default concurrency of 2.
+
+Verification retries are bounded to at most three and are only enabled for
+allowlisted verify-tier commands. Shell, E2E, and write tasks are never replayed
+automatically because repeating them could duplicate side effects. `change_and_verify`
+returns diagnostics, retry attempts, and a stable repeated-failure fingerprint;
+it does not invent a patch when a test fails.
+
 ## Install In 5 Minutes
 
 Full beginner guide: [docs/INSTALL.md](docs/INSTALL.md)

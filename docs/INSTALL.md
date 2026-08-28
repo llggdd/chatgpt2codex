@@ -78,6 +78,8 @@ Windows에서는 브라우저 또는 앱 창 캡처 권한 경고가 뜨면 허�
 - 임시 `trycloudflare.com` 주소는 앱이나 터널을 재시작하면 바뀔 수 있습니다.
 - 이름을 바꾼 뒤 ChatGPT에 예전 이름이 남아 있으면 커넥터를 새로고침하거나 다시 연결하고, URL이 원하는 컴퓨터의 도메인인지 확인하세요.
 - 동시 작업 분리는 원격 MCP 연결별로 적용됩니다. 같은 연결에서 여러 프로젝트를 동시에 다룰 때는 각 호출에 `projectId`를 명시하세요.
+- 여러 작업을 동시에 실행하려면 `task_start`를 호출하고 `task_status`/`task_result`로 확인하세요. 목표 설명까지 함께 보존하는 단일 진입점이 필요하면 `task_execute`를 사용하세요. 목표만 보내면 안전한 다음 단계가 반환되고, 목표와 명시적인 command/shell/E2E 실행 명세를 함께 보내면 바로 큐에 들어갑니다. 읽기 작업은 같은 프로젝트에서 병렬 실행할 수 있고, 쓰기 작업은 프로젝트별로 자동 직렬화됩니다. 기본 최대 동시 실행 수는 2개이며 `CHATGPT2CODEX_MAX_CONCURRENT_TASKS=1..8`로 조정할 수 있습니다.
+- 반복 탐색을 줄이려면 `project_bootstrap`을 먼저 호출하고, 패치와 변경 파일 기반 검증을 한 번에 처리하려면 `change_and_verify`를 사용하세요. 이 도구들은 패치 전 lease와 해시 조건을 그대로 검사합니다. `maxRetries`는 최대 3회까지이며 allowlist verify 명령에만 적용되고, shell/E2E/쓰기 작업은 부작용 중복을 막기 위해 자동 재실행하지 않습니다.
 - Windows SmartScreen 경고는 아직 널리 알려지지 않은 새 설치파일에서 보일 수 있습니다. 공식 릴리스 파일인지 확인한 뒤 진행하세요.
 
 ### Cloudflare 터널 끄기 및 로컬 모드로 전환
@@ -156,6 +158,16 @@ If ChatGPT keeps showing the old metadata after a rename, refresh or reconnect
 that app registration and verify the connector URL points to the intended host.
 Isolation is per remote MCP connection; concurrent workflows sharing one
 connection should pass an explicit `projectId`.
+
+For faster workflows, call `project_bootstrap` once to collect rules, status,
+commands, and key files. Use `change_and_verify` to apply a hash-guarded patch,
+create a checkpoint, and run up to three safe tests selected from the changed
+files. Use `task_execute` when a goal should travel with an explicit guarded
+command/shell/E2E execution spec (a goal-only call returns a safe plan), or
+`task_start` for a lower-level job. Poll
+with `task_status` / `task_result`; read jobs may share a project while writes
+are serialized per project. The default concurrency is 2; set
+`CHATGPT2CODEX_MAX_CONCURRENT_TASKS=1..8` before starting the runtime to tune it.
 
 ### E2E screenshots
 
