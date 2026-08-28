@@ -114,6 +114,16 @@ MCP calls cannot create or expand this grant. Password managers,
 Terminal, System Settings, banking, and 2FA apps remain blocked even if named.
 The runtime exposes `computer_task_execute` for the persistent observation
 loop and `computer_request_action` for each individually confirmed action.
+If the configured workspace is a container (for example `~/codes`), choose
+the actual project folder for **Computer Use project** in Settings; the grant
+is intentionally scoped to one registered project. `computer_access_status`
+reports the selected project, grant, instance binding, allowlist, and the next
+required step when ChatGPT says that a project with permission must be opened.
+
+Workspace discovery searches two directory levels by default, so layouts such
+as `codes/100_xxx/projectname` are included. Call `workspace_refresh_index` with
+`depth: 3` (up to 5) when a project is deeper; project-marker directories stop
+further traversal so dependency/build trees are not scanned.
 
 The equivalent local CLI is:
 

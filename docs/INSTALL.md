@@ -79,7 +79,7 @@ Windows에서는 브라우저 또는 앱 창 캡처 권한 경고가 뜨면 허�
 
 ### macOS Computer Use 사용
 
-코딩 도구만이 아니라 Safari, TextEdit 같은 로컬 앱을 단계적으로 조작하려면 메뉴 막대의 **Settings...**에서 **ChatGPT의 제한형 Computer Use 허용**을 켭니다. 허용 앱, 권한 유효시간(1~60분), 최대 동작 수(1~100)를 입력하고 저장하면 현재 선택한 프로젝트와 이 컴퓨터에만 유효한 Control Grant가 로컬에서 발급됩니다.
+코딩 도구만이 아니라 Safari, TextEdit 같은 로컬 앱을 단계적으로 조작하려면 메뉴 막대의 **Settings...**에서 **ChatGPT의 제한형 Computer Use 허용**을 켭니다. 허용 앱, 권한 유효시간(1~60분), 최대 동작 수(1~100)를 입력하고 저장하면 현재 컴퓨터와 선택한 프로젝트에만 유효한 Control Grant가 로컬에서 발급됩니다. 작업공간으로 `~/codes`처럼 컨테이너 폴더를 등록했다면 **Computer Use project**에 실제 프로젝트 폴더( `.git`, `package.json` 등 표시 파일이 있는 폴더)를 별도로 선택해야 합니다.
 
 - ChatGPT나 원격 MCP는 이 권한을 직접 발급하거나 범위를 늘릴 수 없습니다.
 - 각 클릭·입력·키 동작은 `computer_request_action`으로 한 번씩 명시됩니다.
@@ -87,6 +87,11 @@ Windows에서는 브라우저 또는 앱 창 캡처 권한 경고가 뜨면 허�
 - 설정을 끄거나 Kill Control을 누르거나, 시간이 만료되거나, 동작 수를 모두 쓰면 권한이 회수됩니다.
 - 최초 설정 후에는 대기 중인 제어 작업 메뉴에서 남은 시간·사용량을 확인하고 권한을 바로 재발급하거나 회수할 수 있습니다.
 - 암호 관리자, Terminal, 시스템 설정, 금융·2FA 앱은 허용 목록에 적어도 차단됩니다.
+- ChatGPT에서 "권한이 있는 프로젝트를 열라"는 안내가 나오면 `computer_access_status`를 호출해 활성 프로젝트·Control Grant·MCP 인스턴스가 일치하는지 확인하세요. 원격 MCP는 `preset=control`을 직접 발급할 수 없으므로 Mac 상태 막대 또는 로컬 CLI에서 Grant를 발급해야 합니다.
+
+### 중첩된 작업공간
+
+`codes/100_xxx/projectname`처럼 프로젝트가 두 단계 아래에 있어도 기본 스캔에 포함됩니다. 더 깊은 구조는 `workspace_refresh_index`에 `depth`(최대 5)를 지정하세요. `.git`, `package.json` 등의 프로젝트 표시 폴더를 만나면 그 아래는 다시 탐색하지 않아 `node_modules`·빌드 산출물이 프로젝트로 잘못 등록되지 않습니다.
 
 터미널에서는 같은 권한을 다음처럼 관리할 수 있습니다.
 
@@ -216,12 +221,24 @@ To let ChatGPT operate an allowlisted local app through a bounded workflow,
 open **Settings...**, enable **Allow bounded Computer Use from ChatGPT**, enter
 the allowed app names, and set a 1–60 minute lifetime and 1–100 action budget.
 Saving creates a local Control Grant scoped to this instance and the selected
-project. Remote MCP calls cannot issue or widen it. `computer_task_execute`
+project. If the workspace is a container such as `~/codes`, choose the actual
+marker-bearing project in the **Computer Use project** field as well. Remote MCP calls cannot issue or widen it. `computer_task_execute`
 persists the observe/action/verify loop; every action is still an explicit
 `computer_request_action`. Disable the setting, use Kill Control, or run
 `chatgpt2codex control grant off` to revoke it immediately. After initial
 setup, the pending-control submenu also shows remaining time and usage and can
 reissue or revoke the grant directly.
+If ChatGPT says to open a project with permission, call
+`computer_access_status`; it shows the active project, local grant, instance
+binding, allowlist, and the next required step.
+
+### Nested workspaces
+
+Projects are discovered up to two directory levels below the workspace by
+default, including layouts such as `codes/100_xxx/projectname`. Pass a
+`depth` value (maximum 5) to `workspace_refresh_index` for deeper layouts.
+Traversal stops at a project marker (`.git`, `package.json`, and similar), so
+dependency and build directories are not treated as separate projects.
 
 On Windows, allow the browser or app window to be visible while capturing. If a screenshot is blank, restart ChatGPT To Codex normally, keep the target window on screen, and retry.
 

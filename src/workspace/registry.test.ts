@@ -94,6 +94,44 @@ describe("scanWorkspace", () => {
     expect(entries).toHaveLength(0);
   });
 
+  it("discovers projects two directory levels below a container workspace", async () => {
+    const projDir = path.join(root, "100_xxx", "projectname");
+    await mkdir(projDir, { recursive: true });
+    await writeFile(path.join(projDir, "package.json"), "{}");
+
+    const entries = await scanWorkspace(root);
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      projectId: "projectname",
+      name: "projectname",
+      root: projDir,
+    });
+    expect(entries[0]?.aliases).toContain(path.join("100_xxx", "projectname"));
+    const byPathAlias = findProject(entries, { name: path.join("100_xxx", "projectname") });
+    expect(byPathAlias).toMatchObject({ ok: true, entry: { root: projDir } });
+  });
+
+  it("honors an explicit scan depth and does not descend through a project boundary", async () => {
+    const deepProject = path.join(root, "group", "nested", "deep-project");
+    await mkdir(deepProject, { recursive: true });
+    await writeFile(path.join(deepProject, "package.json"), "{}");
+
+    expect(await scanWorkspace(root, { depth: 1 })).toHaveLength(0);
+    expect(await scanWorkspace(root, { depth: 2 })).toHaveLength(0);
+    expect(await scanWorkspace(root, { depth: 3 })).toHaveLength(1);
+
+    const outerProject = path.join(root, "outer-project");
+    const innerProject = path.join(outerProject, "fixtures", "inner-project");
+    await mkdir(innerProject, { recursive: true });
+    await writeFile(path.join(outerProject, "package.json"), "{}");
+    await writeFile(path.join(innerProject, "package.json"), "{}");
+
+    const boundaryEntries = await scanWorkspace(root, { depth: 5 });
+    expect(boundaryEntries.filter((entry) => entry.root === outerProject)).toHaveLength(1);
+    expect(boundaryEntries.some((entry) => entry.root === innerProject)).toBe(false);
+  });
+
   it("skips hidden directories", async () => {
     const hidden = path.join(root, ".config");
     await mkdir(hidden, { recursive: true });
@@ -102,6 +140,17 @@ describe("scanWorkspace", () => {
     const entries = await scanWorkspace(root);
 
     expect(entries).toHaveLength(0);
+  });
+
+  it("can include hidden project directories when requested", async () => {
+    const hidden = path.join(root, ".private", "nested-project");
+    await mkdir(hidden, { recursive: true });
+    await writeFile(path.join(hidden, "package.json"), "{}");
+
+    const entries = await scanWorkspace(root, { includeHidden: true });
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.root).toBe(hidden);
   });
 
   it("detects hasCodeBrain when .ai/bin/ai exists", async () => {

@@ -129,7 +129,8 @@ const ACTION_ROUTES: ActionRoute[] = [
     tool: "workspace_refresh_index",
     operationId: "workspace_refresh_index",
     summary: "Refresh the local project index",
-    description: "Rescan the local workspace root and refresh chatgpt2codex's project registry.",
+    description:
+      "Rescan the local workspace root and refresh chatgpt2codex's project registry. Container workspaces are searched up to two directory levels by default; project-marker folders stop further traversal.",
     schema: "WorkspaceRefreshIndexInput",
   },
   {
@@ -884,7 +885,7 @@ function openApiSpec(publicOrigin: string, identity = fallbackDeviceIdentity()):
           type: "object",
           additionalProperties: false,
           properties: {
-            depth: { type: "integer", minimum: 1 },
+            depth: { type: "integer", minimum: 1, maximum: 5, description: "Descendant directory levels to scan; defaults to 2." },
             includeHidden: { type: "boolean" },
           },
         },

@@ -128,6 +128,39 @@ describe("desktop-control tool gating", () => {
     expect(names).toContain("workspace_list_projects");
   });
 
+  it("reports the missing project/grant steps without attempting desktop control", async () => {
+    process.env.CHATGPT2CODEX_CONTROL = "1";
+    process.env.CHATGPT2CODEX_CONTROL_ALLOWLIST = "TextEdit";
+    const { ctx } = makeCtx(stateDir, projectRoot);
+    const tools = await registeredTools(ctx);
+    const result = await tools.computer_access_status?.handler?.({});
+    expect(result?.isError).toBeFalsy();
+    expect(result?.structuredContent?.ready).toBe(false);
+    expect(result?.structuredContent?.localGrant).toBeNull();
+    expect(result?.structuredContent?.projectOptions).toEqual([expect.objectContaining({ projectId: "proj" })]);
+    expect(result?.structuredContent?.nextActions).toEqual(
+      expect.arrayContaining([expect.stringContaining("project_select"), expect.stringContaining("Control Grant")]),
+    );
+  });
+
+  it("selects a nested project by its workspace-relative alias", async () => {
+    const { ctx } = makeCtx(stateDir, projectRoot);
+    const nestedRoot = path.join(ctx.workspaceRoot, "100_xxx", "projectname");
+    ctx.registry.push({
+      projectId: "projectname",
+      name: "projectname",
+      root: nestedRoot,
+      aliases: ["projectname", path.join("100_xxx", "projectname")],
+    });
+    const tools = await registeredTools(ctx);
+    const result = await tools.project_select?.handler?.({
+      projectId: path.join("100_xxx", "projectname"),
+      reason: "nested project alias",
+    });
+    expect(result?.isError).toBeFalsy();
+    expect((result?.structuredContent?.lease as { projectId?: string } | undefined)?.projectId).toBe("projectname");
+  });
+
   it("denies computer_request_action without any lease (PROJECT_NOT_SELECTED)", async () => {
     process.env.CHATGPT2CODEX_CONTROL = "1";
     const { ctx } = makeCtx(stateDir, projectRoot);

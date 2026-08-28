@@ -71,6 +71,10 @@ Troubleshooting:
   `targetInstanceId`; a missing or different id is rejected before execution.
 - Remote MCP connections keep their project/lease selection separate. If two
   workflows share one connection, pass an explicit `projectId` in each call.
+- Container workspaces are scanned two levels deep by default, so layouts such
+  as `codes/100_xxx/projectname` are discoverable. Pass `depth` (up to 5) to
+  `workspace_refresh_index` for deeper layouts; traversal stops at project
+  markers to avoid dependency/build trees.
 
 The tray UI follows the Windows display language by default and can be changed
 in Settings. Supported UI languages: English, Korean, Japanese, Simplified

@@ -6,10 +6,10 @@ import { resolveActiveProject } from "../workspace/active.js";
 import { captureE2eAppScreenshot, captureE2eScreenshot } from "../e2e/local-e2e.js";
 import { redact } from "../policy/secrets.js";
 import { assertTargetInstance, instanceIdForContext } from "../instance-target.js";
-import { assertAllowedTarget, controlAllowlist, isAppAllowed, isControlChatGptExposed } from "./policy.js";
+import { assertAllowedTarget, controlAllowlist, isAppAllowed, isControlChatGptExposed, isControlEnabled } from "./policy.js";
 import { assertScreenshotTargetAllowed, maskSensitiveRegions } from "./screenshot-mask.js";
 import { executeApprovedAction } from "./executor.js";
-import { authorizeControlGrant, consumeControlGrant, type ControlGrant, type ControlGrantKind } from "./grant.js";
+import { authorizeControlGrant, consumeControlGrant, readControlGrant, type ControlGrant, type ControlGrantKind } from "./grant.js";
 import {
   finishComputerTask,
   getComputerTask,
@@ -146,12 +146,25 @@ async function requireControlAccess(
   } catch (grantError) {
     if (!ctx.remote) {
       if (localLeaseError) throw localLeaseError;
-      throw new DomainError(ErrorCode.PROJECT_NOT_SELECTED, "Select a project with project_select preset=control first");
+      throw new DomainError(
+        ErrorCode.PROJECT_NOT_SELECTED,
+        "Computer Use requires an authorized project. Select one with project_select preset=control, or issue a local Control Grant from the Mac status bar/CLI; call computer_access_status for diagnostics.",
+        { nextTool: "computer_access_status", localOnly: true },
+      );
     }
     throw grantError;
   }
-  const entries = ctx.registry.length > 0 ? ctx.registry : await ctx.store.loadProjects();
-  const entry = entries.find((candidate) => candidate.projectId === grant.projectId);
+  let entries = ctx.registry.length > 0 ? ctx.registry : await ctx.store.loadProjects();
+  let entry = entries.find((candidate) => candidate.projectId === grant.projectId);
+  // A local grant may be issued while the long-lived HTTP process still has
+  // an older in-memory registry (for example immediately after discovering a
+  // nested project). Reload once before declaring the grant stale.
+  if (!entry) {
+    const loaded = await ctx.store.loadProjects();
+    ctx.registry.splice(0, ctx.registry.length, ...loaded);
+    entries = ctx.registry;
+    entry = entries.find((candidate) => candidate.projectId === grant.projectId);
+  }
   if (!entry) {
     throw new DomainError(ErrorCode.PROJECT_NOT_FOUND, `Control Grant project not found: ${grant.projectId}`);
   }
@@ -163,6 +176,115 @@ export interface ComputerScreenshotInput {
   label?: string;
   waitMs?: number;
   targetInstanceId?: string;
+}
+
+/**
+ * Explain the two independent Computer Use gates without requiring a caller
+ * to deliberately trigger a screenshot or input action. This is intentionally
+ * read-only and remains visible even when the control surface is disabled so
+ * the owner can see exactly which local setting/lease is missing.
+ */
+export async function handleComputerAccessStatus(ctx: ToolContext): Promise<CallToolResultLike> {
+  return withControlErrorMapping(ctx, "computer_access_status", {}, async () => {
+    const identity = ctx.identity;
+    const instanceId = instanceIdForContext(ctx);
+    const allowlist = controlAllowlist();
+    const grant = await readControlGrant(ctx.stateDir);
+    const grantMatchesInstance = grant?.instanceId === instanceId;
+    const controlEnabled = isControlEnabled();
+
+    let active: Awaited<ReturnType<typeof resolveActiveProject>> = null;
+    let activeError: string | undefined;
+    try {
+      active = await resolveActiveProject(ctx);
+    } catch (err) {
+      activeError = err instanceof Error ? err.message : String(err);
+    }
+
+    let entries = ctx.registry.length > 0 ? ctx.registry : await ctx.store.loadProjects();
+    if (grant && !entries.some((entry) => entry.projectId === grant.projectId)) {
+      const loaded = await ctx.store.loadProjects();
+      if (loaded.some((entry) => entry.projectId === grant.projectId)) {
+        ctx.registry.splice(0, ctx.registry.length, ...loaded);
+        entries = ctx.registry;
+      }
+    }
+    const grantProjectRegistered = Boolean(grant && entries.some((entry) => entry.projectId === grant.projectId));
+    const controlLease = active?.lease?.preset === "control" && Date.now() <= (active.lease.expiresAt ?? 0);
+    const usableGrant = Boolean(grant && grantMatchesInstance && grantProjectRegistered);
+    const ready = controlEnabled && (controlLease || usableGrant);
+    const nextActions: string[] = [];
+    if (!controlEnabled) {
+      nextActions.push("Enable CHATGPT2CODEX_CONTROL and restart the MCP runtime.");
+    }
+    if (activeError && !usableGrant) {
+      nextActions.push("Refresh the workspace index, then select the intended project again.");
+    } else if (!active && !usableGrant) {
+      nextActions.push("Call workspace_list_projects, then project_select for the intended project.");
+    }
+    if (grant && !grantMatchesInstance) {
+      nextActions.push("Reissue the Control Grant on this computer; the existing grant belongs to another MCP instance.");
+    }
+    if (grant && grantMatchesInstance && !grantProjectRegistered) {
+      nextActions.push("Refresh the workspace index so the grant's project is registered in this runtime.");
+    }
+    if (!controlLease && !grantMatchesInstance) {
+      nextActions.push(
+        "For remote Computer Use, issue a local Control Grant from the Mac status bar or `chatgpt2codex control grant on`; a remote caller cannot grant itself control.",
+      );
+    }
+    if (allowlist.length === 0) {
+      nextActions.push("Configure at least one non-sensitive app in the Computer Use allowlist.");
+    }
+    if (nextActions.length === 0) nextActions.push("Computer Use is ready for the configured project and allowlisted apps.");
+
+    const projectOptions = entries.slice(0, 50).map((entry) => ({
+      projectId: entry.projectId,
+      name: entry.name,
+      root: entry.root,
+    }));
+    const localGrant = grant
+      ? {
+          grantId: grant.grantId,
+          instanceId: grant.instanceId,
+          projectId: grant.projectId,
+          apps: grant.apps,
+          kinds: grant.kinds,
+          expiresAt: grant.expiresAt,
+          maxActions: grant.maxActions,
+          usedActions: grant.usedActions,
+          matchesThisInstance: grantMatchesInstance,
+          projectRegistered: grantProjectRegistered,
+        }
+      : null;
+
+    return makeResult(
+      {
+        controlEnabled,
+        chatGptExposed: isControlChatGptExposed(),
+        instance: {
+          instanceId,
+          displayName: identity?.displayName,
+        },
+        workspaceRoot: ctx.workspaceRoot,
+        activeProject: active
+          ? {
+              projectId: active.projectId,
+              root: active.root,
+              leasePreset: active.lease?.preset ?? null,
+              leaseExpiresAt: active.lease?.expiresAt ?? null,
+            }
+          : null,
+        activeProjectError: activeError,
+        localGrant,
+        allowlist,
+        ready,
+        projectOptions,
+        nextActions,
+      },
+      ready ? "Computer Use access is ready." : "Computer Use access needs local project/control authorization.",
+    );
+  });
 }
 
 export async function handleComputerScreenshot(ctx: ToolContext, input: ComputerScreenshotInput): Promise<CallToolResultLike> {
