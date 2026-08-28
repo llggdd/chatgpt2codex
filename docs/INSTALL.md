@@ -45,14 +45,24 @@ ChatGPT To Codex는 내 Mac 또는 Windows PC에서 실행되는 로컬 코딩 �
 1. macOS는 메뉴 막대 아이콘, Windows는 시스템 트레이 아이콘을 누릅니다.
 2. **Settings...**를 엽니다.
 3. **Project folder**에서 ChatGPT가 도와줄 프로젝트 폴더를 고릅니다.
-4. ChatGPT 웹에서 연결하려면 **ChatGPT web connector**를 켭니다.
-5. 고정 도메인이 없다면 도메인 칸은 비워둡니다. 그러면 임시 `trycloudflare.com` 주소가 만들어질 수 있습니다.
-6. **Start MCP**를 누릅니다.
-7. 상태가 켜질 때까지 기다립니다.
-8. **Copy Connector URL**을 누릅니다. 주소는 `/mcp`로 끝나야 합니다.
-9. ChatGPT의 Apps, Apps & Connectors, 또는 Connectors 설정에서 새 앱/커넥터를 만듭니다.
-10. 복사한 `/mcp` 주소를 붙여넣습니다.
-11. 승인 화면이 나오면 ChatGPT To Codex 앱에서 Owner Token을 복사해 입력합니다.
+4. 여러 컴퓨터를 연결한다면 **MCP instance name**에 `Office Mac`, `Home PC`처럼 서로 다른 이름을 입력합니다.
+5. ChatGPT 웹에서 연결하려면 **ChatGPT web connector**를 켭니다.
+6. 고정 도메인이 없다면 도메인 칸은 비워둡니다. 그러면 임시 `trycloudflare.com` 주소가 만들어질 수 있습니다.
+7. **Start MCP**를 누릅니다. 이름을 바꾼 경우 실행 중인 MCP가 자동으로 재시작됩니다.
+8. 상태가 켜질 때까지 기다립니다.
+9. **Copy Connector URL**을 누릅니다. 주소는 `/mcp`로 끝나야 합니다.
+10. ChatGPT의 Apps, Apps & Connectors, 또는 Connectors 설정에서 새 앱/커넥터를 만듭니다.
+11. 복사한 `/mcp` 주소를 붙여넣습니다.
+12. 승인 화면이 나오면 ChatGPT To Codex 앱에서 Owner Token을 복사해 입력합니다.
+
+여러 컴퓨터가 연결된 상태에서는 먼저 `device_identity`를 호출하고, 응답의
+정확한 `instanceId`를 모든 원격 변경 작업의 `targetInstanceId`에 넣는 것이
+권장됩니다. 예전 스키마를 캐시해 `device_identity`나 `targetInstanceId`를
+아직 노출하지 않는 클라이언트도, 연결 자체가 특정 MCP 인스턴스에 바인딩되어
+있으면 서버가 그 인스턴스를 기본 대상으로 사용합니다. 다른 컴퓨터의 ID를
+명시적으로 보내면 파일 변경, 명령 실행, E2E, 이미지 저장, 작업 큐,
+Computer Use 실행 전에 계속 거부됩니다. 업그레이드 후에는 `code-x`
+등록을 새로고침하거나 다시 연결해 최신 도구 목록을 받으세요.
 
 ### E2E 스크린샷 사용
 
@@ -71,11 +81,68 @@ macOS 권한이 필요할 수 있습니다.
 
 Windows에서는 브라우저 또는 앱 창 캡처 권한 경고가 뜨면 허용하세요. 캡처가 비어 있으면 앱을 관리자 권한 없이 일반 실행으로 다시 켜고, 캡처 대상 창이 실제 화면에 보이는지 확인하세요.
 
+### macOS Computer Use 사용
+
+코딩 도구만이 아니라 Safari, TextEdit 같은 로컬 앱을 단계적으로 조작하려면 메뉴 막대의 **Settings...**에서 **ChatGPT의 제한형 Computer Use 허용**을 켭니다. 허용 앱, 권한 유효시간(1~60분), 최대 동작 수(1~100)를 입력하고 저장하면 현재 컴퓨터와 선택한 프로젝트에만 유효한 Control Grant가 로컬에서 발급됩니다. 작업공간으로 `~/codes`처럼 컨테이너 폴더를 등록했다면 **Computer Use project**에 실제 프로젝트 폴더( `.git`, `package.json` 등 표시 파일이 있는 폴더)를 별도로 선택해야 합니다.
+
+- ChatGPT나 원격 MCP는 이 권한을 직접 발급하거나 범위를 늘릴 수 없습니다.
+- 각 클릭·입력·키 동작은 `computer_request_action`으로 한 번씩 명시됩니다.
+- `computer_task_execute`는 화면 관찰, 동작 후 재확인, 동일 화면 반복 감지, 최대 단계 제한을 보존합니다.
+- 설정을 끄거나 Kill Control을 누르거나, 시간이 만료되거나, 동작 수를 모두 쓰면 권한이 회수됩니다.
+- 최초 설정 후에는 대기 중인 제어 작업 메뉴에서 남은 시간·사용량을 확인하고 권한을 바로 재발급하거나 회수할 수 있습니다.
+- 암호 관리자, Terminal, 시스템 설정, 금융·2FA 앱은 허용 목록에 적어도 차단됩니다.
+- ChatGPT에서 "권한이 있는 프로젝트를 열라"는 안내가 나오면 `computer_access_status`를 호출해 활성 프로젝트·Control Grant·MCP 인스턴스가 일치하는지 확인하세요. 원격 MCP는 `preset=control`을 직접 발급할 수 없으므로 Mac 상태 막대 또는 로컬 CLI에서 Grant를 발급해야 합니다.
+
+### 중첩된 작업공간
+
+`codes/100_xxx/projectname`처럼 프로젝트가 두 단계 아래에 있어도 기본 스캔에 포함됩니다. 더 깊은 구조는 `workspace_refresh_index`에 `depth`(최대 5)를 지정하세요. `.git`, `package.json` 등의 프로젝트 표시 폴더를 만나면 그 아래는 다시 탐색하지 않아 `node_modules`·빌드 산출물이 프로젝트로 잘못 등록되지 않습니다.
+
+터미널에서는 같은 권한을 다음처럼 관리할 수 있습니다.
+
+```bash
+CHATGPT2CODEX_CONTROL_ALLOWLIST="Safari,TextEdit" \
+  chatgpt2codex control grant on --project-root /path/to/project \
+  --apps "Safari,TextEdit" --minutes 10 --max 20
+chatgpt2codex control grant status
+chatgpt2codex control grant off
+```
+
 ### 주의
 
 - Owner Token은 비밀번호처럼 다루세요.
 - 임시 `trycloudflare.com` 주소는 앱이나 터널을 재시작하면 바뀔 수 있습니다.
+- 이름을 바꾼 뒤 ChatGPT에 예전 이름이 남아 있으면 커넥터를 새로고침하거나 다시 연결하고, URL이 원하는 컴퓨터의 도메인인지 확인하세요.
+- 동시 작업 분리는 원격 MCP 연결별로 적용됩니다. 같은 연결에서 여러 프로젝트를 동시에 다룰 때는 각 호출에 `projectId`를 명시하세요.
+- 여러 작업을 동시에 실행하려면 `task_start`를 호출하고 `task_status`/`task_result`로 확인하세요. 목표 설명까지 함께 보존하는 단일 진입점이 필요하면 `task_execute`를 사용하세요. 목표만 보내면 안전한 다음 단계가 반환되고, 목표와 명시적인 command/shell/E2E 실행 명세를 함께 보내면 바로 큐에 들어갑니다. 읽기 작업은 같은 프로젝트에서 병렬 실행할 수 있고, 쓰기 작업은 프로젝트별로 자동 직렬화됩니다. 기본 최대 동시 실행 수는 2개이며 `CHATGPT2CODEX_MAX_CONCURRENT_TASKS=1..8`로 조정할 수 있습니다.
+- 반복 탐색을 줄이려면 `project_bootstrap`을 먼저 호출하고, 패치와 변경 파일 기반 검증을 한 번에 처리하려면 `change_and_verify`를 사용하세요. 이 도구들은 패치 전 lease와 해시 조건을 그대로 검사합니다. `maxRetries`는 최대 3회까지이며 allowlist verify 명령에만 적용되고, shell/E2E/쓰기 작업은 부작용 중복을 막기 위해 자동 재실행하지 않습니다.
 - Windows SmartScreen 경고는 아직 널리 알려지지 않은 새 설치파일에서 보일 수 있습니다. 공식 릴리스 파일인지 확인한 뒤 진행하세요.
+
+### Cloudflare 터널 끄기 및 로컬 모드로 전환
+
+로컬 모드에서는 Cloudflare가 필요하지 않습니다. 앱에서 **ChatGPT web connector**를 끄고 **Stop MCP** 또는 **Restart MCP**를 누르면 MCP 주소가 `http://127.0.0.1:7979/mcp`로 돌아갑니다. 터미널에서 `start-chatgpt.sh`를 직접 실행했다면 `Ctrl+C`로 종료하면 앱이 시작한 터널도 함께 종료됩니다.
+
+이전에 `cloudflared service install`을 실행해 시스템 서비스까지 등록했다면, 앱을 먼저 종료한 뒤 macOS 터미널에서 다음을 실행합니다.
+
+```bash
+sudo cloudflared service uninstall
+sudo launchctl bootout system/com.cloudflare.cloudflared 2>/dev/null || true
+pgrep -af cloudflared || true
+```
+
+`pgrep`에 남은 프로세스가 있으면 해당 PID가 이 앱의 터널인지 확인한 뒤 종료합니다. 이 명령은 이 컴퓨터의 시스템 서비스 등록만 제거하며 Cloudflare 대시보드의 Tunnel을 삭제하지는 않습니다. 다른 Cloudflare 터널을 같은 컴퓨터에서 사용 중이면 PID를 확인하지 않고 전체 `cloudflared`를 종료하지 마세요.
+
+Windows에서 서비스를 등록했다면 관리자 PowerShell에서 `cloudflared service uninstall`을 실행한 뒤 트레이 앱을 종료합니다. 다른 터널이 있으면 모든 `cloudflared` 프로세스를 일괄 종료하지 말고 해당 PID만 확인해 종료하세요.
+
+다시 공개 연결을 만들 때는 컴퓨터마다 서로 다른 Named Tunnel과 Cloudflare Tunnel credentials/token을 사용하세요. **Owner Token은 Cloudflare credentials가 아닙니다.** 새 터널의 토큰은 `PUBLIC_HOSTNAME`과 함께 앱에 전달합니다.
+
+```bash
+export PUBLIC_HOSTNAME=mcp2.example.com
+export CLOUDFLARED_TUNNEL_TOKEN='새 Named Tunnel의 Cloudflare 토큰'
+export CHATGPT2CODEX_EXPOSE_WEB=1
+./start-chatgpt.sh
+```
+
+앱이 관리하는 터널과 launchd 시스템 서비스를 동시에 실행하지 마세요. 확인할 때는 각 컴퓨터의 `/healthz`에서 `instanceId`와 `serverName`이 서로 다른지 확인합니다.
 
 ## English
 
@@ -114,6 +181,41 @@ PKG is better for this release. A DMG is great for drag-and-drop apps, but this 
 6. Add that URL in ChatGPT under Apps, Apps & Connectors, or Connectors.
 7. Approve the connection with the Owner Token from the app.
 
+If you use more than one computer, set a unique **MCP instance name** in
+**Settings...** on each computer (for example, `Office Mac` and `Home PC`).
+Saving settings restarts a running MCP process so the new identity is active.
+The runtime also creates a stable `instanceId` automatically. Both values are
+visible in `/healthz`, the Actions health endpoint, the `device_identity` tool,
+and tool-call proofs.
+Call `device_identity` first and copy its exact `instanceId` into
+`targetInstanceId` on every remote mutation. Project selection, file edits,
+commands, E2E launches, image saves, task creation/cancel, and Computer Use
+accept the bound endpoint's instance for legacy clients that do not expose the
+field yet; an explicitly supplied ID belonging to another computer is rejected
+before execution. Refresh or reconnect the `code-x` registration after an
+upgrade so the current `device_identity` tool and target field appear.
+Remote MCP connections keep their active project and lease state isolated, so
+multiple simultaneous ChatGPT tasks can select different projects safely.
+If an older `code-x` client recreates the HTTP connection for each tool call,
+the gateway keeps a short-lived lease handoff bound to that OAuth client. After
+`project_select`, send the same explicit `projectId` to the next command/edit;
+the handoff expires with the lease and is never written to the global local
+session.
+If ChatGPT keeps showing the old metadata after a rename, refresh or reconnect
+that app registration and verify the connector URL points to the intended host.
+Isolation is per remote MCP connection; concurrent workflows sharing one
+connection should pass an explicit `projectId`.
+
+For faster workflows, call `project_bootstrap` once to collect rules, status,
+commands, and key files. Use `change_and_verify` to apply a hash-guarded patch,
+create a checkpoint, and run up to three safe tests selected from the changed
+files. Use `task_execute` when a goal should travel with an explicit guarded
+command/shell/E2E execution spec (a goal-only call returns a safe plan), or
+`task_start` for a lower-level job. Poll
+with `task_status` / `task_result`; read jobs may share a project while writes
+are serialized per project. The default concurrency is 2; set
+`CHATGPT2CODEX_MAX_CONCURRENT_TASKS=1..8` before starting the runtime to tune it.
+
 ### E2E screenshots
 
 Try:
@@ -124,6 +226,31 @@ Use ChatGPT To Codex to run E2E, open the app, capture screenshots, and show the
 
 macOS may ask for Screen Recording and Accessibility permissions. Enable them in **System Settings** -> **Privacy & Security**.
 
+### macOS Computer Use
+
+To let ChatGPT operate an allowlisted local app through a bounded workflow,
+open **Settings...**, enable **Allow bounded Computer Use from ChatGPT**, enter
+the allowed app names, and set a 1–60 minute lifetime and 1–100 action budget.
+Saving creates a local Control Grant scoped to this instance and the selected
+project. If the workspace is a container such as `~/codes`, choose the actual
+marker-bearing project in the **Computer Use project** field as well. Remote MCP calls cannot issue or widen it. `computer_task_execute`
+persists the observe/action/verify loop; every action is still an explicit
+`computer_request_action`. Disable the setting, use Kill Control, or run
+`chatgpt2codex control grant off` to revoke it immediately. After initial
+setup, the pending-control submenu also shows remaining time and usage and can
+reissue or revoke the grant directly.
+If ChatGPT says to open a project with permission, call
+`computer_access_status`; it shows the active project, local grant, instance
+binding, allowlist, and the next required step.
+
+### Nested workspaces
+
+Projects are discovered up to two directory levels below the workspace by
+default, including layouts such as `codes/100_xxx/projectname`. Pass a
+`depth` value (maximum 5) to `workspace_refresh_index` for deeper layouts.
+Traversal stops at a project marker (`.git`, `package.json`, and similar), so
+dependency and build directories are not treated as separate projects.
+
 On Windows, allow the browser or app window to be visible while capturing. If a screenshot is blank, restart ChatGPT To Codex normally, keep the target window on screen, and retry.
 
 ### Notes
@@ -131,6 +258,33 @@ On Windows, allow the browser or app window to be visible while capturing. If a 
 - Keep the Owner Token private.
 - Temporary `trycloudflare.com` URLs can change after restart.
 - Windows SmartScreen can warn on new unsigned installers. Continue only when the file came from the official GitHub release.
+
+### Turn off Cloudflare and return to local mode
+
+Cloudflare is not needed for local-only use. In the app, turn off **ChatGPT web connector** and click **Stop MCP** or **Restart MCP**; the connector returns to `http://127.0.0.1:7979/mcp`. If you started `start-chatgpt.sh` in a terminal, press `Ctrl+C` to stop the app-managed tunnel as well.
+
+If you previously ran `cloudflared service install`, quit the app first and remove the macOS system service:
+
+```bash
+sudo cloudflared service uninstall
+sudo launchctl bootout system/com.cloudflare.cloudflared 2>/dev/null || true
+pgrep -af cloudflared || true
+```
+
+If `pgrep` still shows a process, verify its PID belongs to this app before stopping it. This removes only the local service registration; it does not delete the Tunnel from the Cloudflare dashboard. Do not stop every `cloudflared` process blindly if this computer hosts another tunnel.
+
+On Windows, run `cloudflared service uninstall` from an elevated PowerShell, then quit the tray app. If another tunnel is in use, stop only the verified process for this app.
+
+When enabling public access again, use a different Named Tunnel and Cloudflare Tunnel credentials/token for each computer. The **Owner Token is not a Cloudflare credential**.
+
+```bash
+export PUBLIC_HOSTNAME=mcp2.example.com
+export CLOUDFLARED_TUNNEL_TOKEN='token for the new Named Tunnel'
+export CHATGPT2CODEX_EXPOSE_WEB=1
+./start-chatgpt.sh
+```
+
+Run either the app-managed tunnel or the launchd system service, never both. Verify that each computer's `/healthz` reports a different `instanceId` and `serverName`.
 
 ## Japanese
 

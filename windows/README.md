@@ -33,9 +33,10 @@ The tray menu stays deliberately small:
 - Open Settings.
 - Quit.
 
-Settings contains the busy stuff: project folder, ChatGPT web connector, owned
-fixed domain, port, launch-at-login, start-on-open, update checks, language
-override, connector URL, health links, logs, releases, and the copyright footer.
+Settings contains the busy stuff: MCP instance name, project folder, ChatGPT web
+connector, owned fixed domain, port, launch-at-login, start-on-open, update
+checks, language override, connector URL, health links, logs, releases, and the
+copyright footer.
 GitHub is a direct button, not a text setting.
 
 First prompt to try in ChatGPT:
@@ -62,6 +63,20 @@ Troubleshooting:
 - If a screenshot is blank, keep the browser or app window visible on screen and
   retry the E2E action.
 - If ChatGPT asks for approval, paste the Owner Token from the Windows app.
+- If more than one computer is connected, give each installation a different
+  MCP instance name in Settings. The `/healthz` response and tool results show
+  the name and stable instance id, which makes the active computer explicit.
+- Before any remote edit, command, E2E, image save, queued task, or Computer Use
+  call, invoke `device_identity` and pass that exact `instanceId` as
+  `targetInstanceId`; bound endpoints infer the id for legacy clients that do
+  not expose the field yet, while a different explicit id is rejected before
+  execution. Refresh the MCP registration after an upgrade.
+- Remote MCP connections keep their project/lease selection separate. If two
+  workflows share one connection, pass an explicit `projectId` in each call.
+- Container workspaces are scanned two levels deep by default, so layouts such
+  as `codes/100_xxx/projectname` are discoverable. Pass `depth` (up to 5) to
+  `workspace_refresh_index` for deeper layouts; traversal stops at project
+  markers to avoid dependency/build trees.
 
 The tray UI follows the Windows display language by default and can be changed
 in Settings. Supported UI languages: English, Korean, Japanese, Simplified

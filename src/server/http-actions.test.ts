@@ -10,6 +10,7 @@ import type { Lease, ToolContext } from "../types.js";
 import { createHttpServer, defaultHttpServerConfig } from "./http.js";
 
 const OWNER_TOKEN = "unit-test-owner-token-123456";
+const TEST_INSTANCE_ID = "inst_actions-test-instance";
 
 function base64Url(bytes: Buffer): string {
   return bytes.toString("base64").replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/u, "");
@@ -71,6 +72,13 @@ function makeCtx(stateDir: string, projectRoot: string): ToolContext {
   return {
     workspaceRoot: path.dirname(projectRoot),
     stateDir,
+    identity: {
+      version: 1,
+      instanceId: TEST_INSTANCE_ID,
+      displayName: "Actions Test Instance",
+      createdAt: 0,
+      updatedAt: 0,
+    },
     registry,
     ledger: { append: async () => undefined },
     store: {
@@ -219,8 +227,9 @@ describe("Custom GPT action bridge", () => {
           E2eTestAndShowScreenshotInput: Record<string, unknown>;
           E2eScreenshotInput: Record<string, unknown>;
           E2eStartServerInput: Record<string, unknown>;
-          FileApplyPatchInput: { properties: Record<string, unknown> };
-          FileCreateInput: { properties: Record<string, unknown> };
+          FileApplyPatchInput: { required?: string[]; properties: Record<string, unknown> };
+          FileCreateInput: { required?: string[]; properties: Record<string, unknown> };
+          ProjectSelectInput: { required?: string[]; properties: Record<string, unknown> };
           ActionToolResponse: { required?: string[]; properties: Record<string, unknown> };
           ToolCallProof: Record<string, unknown>;
           ToolAvailabilityGate: Record<string, unknown>;
@@ -230,12 +239,13 @@ describe("Custom GPT action bridge", () => {
 
     expect(res.status).toBe(200);
     expect(body.openapi).toBe("3.1.0");
-    expect(body.info.version).toBe("0.1.6");
+    expect(body.info.version).toBe("0.2.0");
     expect(body.info.description).toContain("source editing");
     expect(body.info.description).toContain("cannot write /Users/");
     expect(body.info.description).toContain("30 operations");
     expect(body.info.description).toContain("workspace_list_projects");
     expect(body.info.description).toContain("save_chatgpt_image/save_chatgpt_image_from_url");
+    expect(body.info.description).toContain("targetInstanceId");
     expect(body.info["x-chatgpt2codex-tool-proof"]?.namespace).toBe("ChatGPT_To_Codex");
     expect(body.info["x-chatgpt2codex-openapi-operation-count"]).toBeLessThanOrEqual(30);
     expect(body.info["x-chatgpt2codex-tool-names"]).toContain("workspace_list_projects");
@@ -284,6 +294,9 @@ describe("Custom GPT action bridge", () => {
     expect(body.components.schemas.CallToolInput.properties.toolName).toBeDefined();
     expect(body.components.schemas.FileApplyPatchInput.properties.patch).toBeDefined();
     expect(body.components.schemas.FileCreateInput.properties.content).toBeDefined();
+    expect(body.components.schemas.FileApplyPatchInput.required).toContain("targetInstanceId");
+    expect(body.components.schemas.FileCreateInput.required).toContain("targetInstanceId");
+    expect(body.components.schemas.ProjectSelectInput.required).toContain("targetInstanceId");
     expect(body.components.schemas.ActionToolResponse.required).toContain("toolCall");
     expect(body.components.schemas.ActionToolResponse.properties.toolCall).toBeDefined();
     expect(body.components.schemas.ToolCallProof).toBeDefined();
@@ -294,6 +307,33 @@ describe("Custom GPT action bridge", () => {
     expect((body.paths["/actions/import-chatgpt-image-url"] as { post: { description: string } }).post.description).toContain(
       "chatgpt.com/s/m_...",
     );
+  });
+
+  it("keeps explicit instance targets strict while allowing legacy clients on a bound action server", async () => {
+    const server = await startApp(makeCtx(stateDir, projectRoot));
+    stop = server.stop;
+
+    const missingRes = await postAction(server.baseUrl, "/actions/project-select", {
+      projectId: "proj",
+      reason: "missing target",
+    });
+    const missing = (await missingRes.json()) as {
+      ok: boolean;
+      structuredContent?: { code?: string; details?: { actual?: string }; lease?: { projectId?: string } };
+    };
+    expect(missingRes.status).toBe(200);
+    expect(missing.ok).toBe(true);
+    expect(missing.structuredContent?.lease?.projectId).toBe("proj");
+
+    const wrongRes = await postAction(server.baseUrl, "/actions/project-select", {
+      projectId: "proj",
+      reason: "wrong target",
+      targetInstanceId: "inst_other-computer-000000",
+    });
+    const wrong = (await wrongRes.json()) as { ok: boolean; structuredContent?: { code?: string } };
+    expect(wrongRes.status).toBe(200);
+    expect(wrong.ok).toBe(false);
+    expect(wrong.structuredContent?.code).toBe("TARGET_INSTANCE_MISMATCH");
   });
 
   it("exposes the tool-call gate on action health", async () => {
@@ -646,6 +686,7 @@ describe("Custom GPT action bridge", () => {
     const selectRes = await postAction(server.baseUrl, "/actions/project-select", {
       projectId: "proj",
       reason: "unit test",
+      targetInstanceId: TEST_INSTANCE_ID,
     });
     const selected = (await selectRes.json()) as { ok: boolean; structuredContent: { lease?: Lease } };
 
@@ -658,6 +699,7 @@ describe("Custom GPT action bridge", () => {
       projectId: "proj",
       path: "direct-action.txt",
       content: "written by action\n",
+      targetInstanceId: TEST_INSTANCE_ID,
     });
     const created = (await createRes.json()) as { ok: boolean; structuredContent: { path?: string } };
 
@@ -672,6 +714,7 @@ describe("Custom GPT action bridge", () => {
         projectId: "proj",
         path: "proxy-action.txt",
         content: "written by call-tool\n",
+        targetInstanceId: TEST_INSTANCE_ID,
       },
     });
     const proxied = (await proxyRes.json()) as {
@@ -701,7 +744,7 @@ describe("Custom GPT action bridge", () => {
 
     const bridgeRes = await postAction(server.baseUrl, "/actions/call-tool", {
       toolName: "project_select",
-      input: { projectId: "proj", reason: "remote attempt", preset: "control" },
+      input: { projectId: "proj", reason: "remote attempt", preset: "control", targetInstanceId: TEST_INSTANCE_ID },
     });
     const bridgeBody = (await bridgeRes.json()) as { ok: boolean; structuredContent: { code?: string } };
     expect(bridgeRes.status).toBe(200);
@@ -712,6 +755,7 @@ describe("Custom GPT action bridge", () => {
       projectId: "proj",
       reason: "remote attempt via route",
       preset: "control",
+      targetInstanceId: TEST_INSTANCE_ID,
     });
     const routeBody = (await routeRes.json()) as { ok: boolean; structuredContent: { code?: string } };
     expect(routeRes.status).toBe(200);
@@ -726,7 +770,7 @@ describe("Custom GPT action bridge", () => {
     // full-write must both keep working through the same bridge.
     const defaultedRes = await postAction(server.baseUrl, "/actions/call-tool", {
       toolName: "project_select",
-      input: { projectId: "proj", reason: "default preset" },
+      input: { projectId: "proj", reason: "default preset", targetInstanceId: TEST_INSTANCE_ID },
     });
     const defaulted = (await defaultedRes.json()) as { ok: boolean; structuredContent: { lease?: Lease } };
     expect(defaulted.ok).toBe(true);
@@ -734,7 +778,7 @@ describe("Custom GPT action bridge", () => {
 
     const explicitFullWriteRes = await postAction(server.baseUrl, "/actions/call-tool", {
       toolName: "project_select",
-      input: { projectId: "proj", reason: "explicit full-write", preset: "full-write" },
+      input: { projectId: "proj", reason: "explicit full-write", preset: "full-write", targetInstanceId: TEST_INSTANCE_ID },
     });
     const explicitFullWrite = (await explicitFullWriteRes.json()) as { ok: boolean; structuredContent: { lease?: Lease } };
     expect(explicitFullWrite.ok).toBe(true);
@@ -760,6 +804,7 @@ describe("Custom GPT action bridge", () => {
         projectId: "proj",
         url: "http://127.0.0.1:1/",
         waitMs: 999_999, // exceeds max(30_000)
+        targetInstanceId: TEST_INSTANCE_ID,
       },
     });
     const body = (await res.json()) as { ok: boolean; structuredContent?: { code?: string; error?: string } };
@@ -778,6 +823,7 @@ describe("Custom GPT action bridge", () => {
       projectId: "proj",
       url: "http://127.0.0.1:1/",
       waitMs: 999_999,
+      targetInstanceId: TEST_INSTANCE_ID,
     });
     const body = (await res.json()) as { ok: boolean; structuredContent?: { code?: string } };
 
@@ -846,7 +892,7 @@ describe("Custom GPT action bridge", () => {
 
       const res = await postAction(server.baseUrl, "/actions/call-tool", {
         toolName: "computer_action_status",
-        input: {},
+        input: { targetInstanceId: TEST_INSTANCE_ID },
       });
       const body = (await res.json()) as { ok: boolean; structuredContent?: { code?: string } };
       expect(body.ok).toBe(false);
@@ -858,21 +904,26 @@ describe("Custom GPT action bridge", () => {
       const server = await startApp(makeCtx(stateDir, projectRoot));
       stop = server.stop;
 
-      // A real control lease isn't granted through this bridge (preset=control
-      // stays blocked below), so this reaches the tool handler and fails on
-      // the lease check itself — proof it's no longer blocked by
-      // CONTROL_TOOL_NAMES specifically.
+      // A control lease/grant isn't granted through this bridge
+      // (preset=control stays blocked below), so this reaches the tool
+      // handler and fails on the local-grant check itself — proof it's no
+      // longer blocked by CONTROL_TOOL_NAMES specifically.
       const res = await postAction(server.baseUrl, "/actions/call-tool", {
         toolName: "computer_action_status",
-        input: {},
+        input: { targetInstanceId: TEST_INSTANCE_ID },
       });
       const body = (await res.json()) as { ok: boolean; structuredContent?: { code?: string } };
       expect(body.ok).toBe(false);
-      expect(body.structuredContent?.code).toBe("PROJECT_NOT_SELECTED");
+      expect(body.structuredContent?.code).toBe("LEASE_REQUIRED");
 
       const bridgeRes = await postAction(server.baseUrl, "/actions/call-tool", {
         toolName: "project_select",
-        input: { projectId: "proj", reason: "remote attempt while exposed", preset: "control" },
+        input: {
+          projectId: "proj",
+          reason: "remote attempt while exposed",
+          preset: "control",
+          targetInstanceId: TEST_INSTANCE_ID,
+        },
       });
       const bridgeBody = (await bridgeRes.json()) as { ok: boolean; structuredContent: { code?: string } };
       expect(bridgeBody.ok).toBe(false);
@@ -888,6 +939,7 @@ describe("Custom GPT action bridge", () => {
       goal: "/goal deep research and implement safely",
       projectId: "proj",
       urgency: "fast",
+      targetInstanceId: TEST_INSTANCE_ID,
     });
     const body = (await res.json()) as {
       ok: boolean;
@@ -912,6 +964,7 @@ describe("Custom GPT action bridge", () => {
       goal: "/goal implement and verify a focused change",
       projectId: "proj",
       maxTurns: 3,
+      targetInstanceId: TEST_INSTANCE_ID,
     });
     const first = (await firstRes.json()) as {
       ok: boolean;
@@ -932,6 +985,7 @@ describe("Custom GPT action bridge", () => {
       projectId: "proj",
       maxTurns: 3,
       lastResult: "read rules and selected project",
+      targetInstanceId: TEST_INSTANCE_ID,
     });
     const second = (await secondRes.json()) as { ok: boolean; structuredContent: { turn?: number } };
 

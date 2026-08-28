@@ -91,6 +91,56 @@ views. The one-shot `e2e_test_and_show_screenshot` action returns inline
 `imageMarkdown` results so you can inspect the screen without digging through
 local folders.
 
+For faster coding loops, use `project_bootstrap` to collect project rules,
+status, commands, and key files in one read-only call. Use
+`change_and_verify` for a hash-guarded patch plus automatic changed-file test
+selection. For a single orchestrated job, `task_execute` stores a goal and can
+queue it with an explicit guarded command/shell/E2E spec; a goal-only call
+returns the next safe planning steps. Lower-level jobs can use
+`task_start`. Poll either with `task_status` / `task_result`; reads may run in
+parallel while writes are serialized per project. Set
+`CHATGPT2CODEX_MAX_CONCURRENT_TASKS=1..8` before starting the runtime to tune
+the default concurrency of 2.
+
+On macOS, optional Computer Use can carry a bounded task through an
+observe → one explicit action → verify loop. In **Settings...**, enable
+**Allow bounded Computer Use from ChatGPT**, enter only the apps the task may
+touch, and choose a 1–60 minute lifetime plus a 1–100 action budget. Saving
+issues a local, instance-and-project-scoped Control Grant; disabling the
+setting, using the kill switch, expiration, or exhausting the budget revokes
+it. After configuration, the pending-control submenu shows remaining time and
+usage and can reissue or revoke the grant without reopening Settings. Remote
+MCP calls cannot create or expand this grant. Password managers,
+Terminal, System Settings, banking, and 2FA apps remain blocked even if named.
+The runtime exposes `computer_task_execute` for the persistent observation
+loop and `computer_request_action` for each individually confirmed action.
+If the configured workspace is a container (for example `~/codes`), choose
+the actual project folder for **Computer Use project** in Settings; the grant
+is intentionally scoped to one registered project. `computer_access_status`
+reports the selected project, grant, instance binding, allowlist, and the next
+required step when ChatGPT says that a project with permission must be opened.
+
+Workspace discovery searches two directory levels by default, so layouts such
+as `codes/100_xxx/projectname` are included. Call `workspace_refresh_index` with
+`depth: 3` (up to 5) when a project is deeper; project-marker directories stop
+further traversal so dependency/build trees are not scanned.
+
+The equivalent local CLI is:
+
+```bash
+CHATGPT2CODEX_CONTROL_ALLOWLIST="Safari,TextEdit" \
+  chatgpt2codex control grant on --project-root /path/to/project \
+  --apps "Safari,TextEdit" --minutes 10 --max 20
+chatgpt2codex control grant status
+chatgpt2codex control grant off
+```
+
+Verification retries are bounded to at most three and are only enabled for
+allowlisted verify-tier commands. Shell, E2E, and write tasks are never replayed
+automatically because repeating them could duplicate side effects. `change_and_verify`
+returns diagnostics, retry attempts, and a stable repeated-failure fingerprint;
+it does not invent a patch when a test fails.
+
 ## Install In 5 Minutes
 
 Full beginner guide: [docs/INSTALL.md](docs/INSTALL.md)
@@ -110,6 +160,32 @@ macOS short version:
 10. Register that `/mcp` URL in ChatGPT Apps / Connectors and approve with the
     Owner Token shown by the app.
 
+If you connect more than one computer, open **Settings...** on each one and set
+an unmistakable **MCP instance name** (for example, `Office Mac` and `Home PC`).
+Saving settings restarts the local MCP process when it is running. Each install
+also gets a stable `instanceId`; the name and id are returned by `/healthz`, the
+Actions health endpoint, the `device_identity` tool, and every tool-call proof.
+Call `device_identity` first and pass its exact `instanceId` as
+`targetInstanceId` on every remote side-effecting call (project selection,
+edits, commands, E2E launches, image saves, task creation/cancel, and desktop
+control). New clients should send it explicitly; a bound HTTP/MCP endpoint
+also infers its own instance for legacy clients whose cached schema does not
+yet expose `device_identity` or `targetInstanceId`. An explicitly supplied
+different computer's ID is still rejected before any local state or project
+file is touched. Refresh or reconnect the `code-x` registration after an
+upgrade so it loads the current tool schema.
+Separate remote MCP connections also keep their active project/lease state
+separate, so simultaneous tasks do not switch each other's selected project.
+If an older `code-x` client recreates the HTTP connection for every tool call,
+the gateway keeps the live lease as a short-lived, OAuth-client-bound handoff;
+after `project_select`, pass the same explicit `projectId` to the next command
+or edit. This compatibility handoff expires with the lease and is not a global
+or persistent session.
+After changing a name, refresh or reconnect the ChatGPT app if it has cached
+the previous MCP metadata; the connector URL still must point to that machine.
+This isolation is per remote MCP connection; workflows sharing one connection
+should still pass an explicit `projectId` when they run concurrently.
+
 Windows short version:
 
 1. Download `chatgpt2codex-0.2.0-windows-setup.exe` from the [latest release](https://github.com/ezBuilder/chatgpt2codex/releases/tag/v0.2.0).
@@ -121,7 +197,18 @@ Windows short version:
    web connector if needed, then click **Start MCP**.
 6. Copy the `/mcp` Connector URL and approve it in ChatGPT with the Owner Token.
 
+Set a different **MCP instance name** on every Windows computer before copying
+its connector URL. The name is persisted locally and is included with health
+checks and tool results, so you can confirm which machine ChatGPT reached.
+
 Keep the Owner Token private. Treat it like a password.
+
+For terminal-only setup, inspect or rename the current installation with:
+
+```bash
+chatgpt2codex device
+chatgpt2codex device --set-name "Office Mac"
+```
 
 ## First Prompt To Try
 

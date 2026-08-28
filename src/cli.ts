@@ -2,11 +2,12 @@
 /**
  * chatgpt2codex CLI entrypoint.
  *
- * Minimal hand-rolled argv parsing (no commander dependency) for the three
- * MVP subcommands defined in PRD §5:
+ * Minimal hand-rolled argv parsing (no commander dependency) for the CLI
+ * subcommands defined in PRD §5 and the local runtime extensions:
  *
  *   chatgpt2codex serve  --workspace <path>
  *   chatgpt2codex init   --workspace <path>
+ *   chatgpt2codex device [--set-name <name>]
  *   chatgpt2codex doctor
  */
 
@@ -28,9 +29,16 @@ import { JsonOAuthStore } from "./auth/oauth-store.js";
 import { checkIntakeAvailability } from "./assets/image-intake.js";
 import { controlAllowlist, isAppAllowed, isControlEnabled, isSensitiveApp } from "./control/policy.js";
 import { startExecutor } from "./control/executor.js";
-import { approveAction, isKilled, listActions, rejectAction, setKill, toSummary } from "./control/queue.js";
+import { approveAction, clearKill, isKilled, listActions, rejectAction, setKill, toSummary } from "./control/queue.js";
 import { preflightPermissions } from "./control/mac-input.js";
 import { clampMinutes, clearAuto, readAuto, setAuto, type AutoActionKind } from "./control/auto.js";
+import {
+  clearControlGrant,
+  issueControlGrant,
+  readControlGrant,
+  type ControlGrantKind,
+} from "./control/grant.js";
+import { ensureDeviceIdentity, requireDisplayName } from "./identity/device.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -82,6 +90,10 @@ function defaultConfig(workspaceRoot: string, stateDir: string): Config {
 async function buildToolContext(workspace: string): Promise<ToolContext> {
   const workspaceRoot = path.resolve(workspace);
   const stateDir = defaultStateDir();
+  const identity = await ensureDeviceIdentity(stateDir, {
+    instanceId: process.env.CHATGPT2CODEX_INSTANCE_ID,
+    displayName: process.env.CHATGPT2CODEX_DISPLAY_NAME,
+  });
 
   const store = new Store(stateDir);
   const ledger = new Ledger(stateDir);
@@ -94,6 +106,7 @@ async function buildToolContext(workspace: string): Promise<ToolContext> {
   return {
     workspaceRoot,
     stateDir,
+    identity,
     registry,
     ledger: { append: (event) => ledger.append(event) },
     store: {
@@ -225,6 +238,7 @@ async function cmdServeHttp(flags: Record<string, string | boolean>): Promise<vo
   httpServer = app.listen(port, host, () => {
     console.error(`chatgpt2codex serve --http: listening on http://${host}:${port}/mcp`);
     console.error(`chatgpt2codex serve --http: public URL ${publicUrl}/mcp`);
+    console.error(`chatgpt2codex serve --http: instance=${ctx.identity?.displayName ?? "ChatGPT To Codex"} (${ctx.identity?.instanceId ?? "unconfigured"})`);
     console.error(`chatgpt2codex serve --http: workspace=${ctx.workspaceRoot}`);
     if (idleShutdownMs !== undefined) {
       console.error(`chatgpt2codex serve --http: idle shutdown after ${idleShutdownMinutes} minute(s) without sessions`);
@@ -254,6 +268,10 @@ async function cmdInit(flags: Record<string, string | boolean>): Promise<void> {
   const workspace = typeof flags.workspace === "string" ? flags.workspace : process.cwd();
   const workspaceRoot = path.resolve(workspace);
   const stateDir = defaultStateDir();
+  const identity = await ensureDeviceIdentity(stateDir, {
+    instanceId: process.env.CHATGPT2CODEX_INSTANCE_ID,
+    displayName: process.env.CHATGPT2CODEX_DISPLAY_NAME,
+  });
 
   const store = new Store(stateDir);
   const ledger = new Ledger(stateDir);
@@ -266,6 +284,7 @@ async function cmdInit(flags: Record<string, string | boolean>): Promise<void> {
   console.error(
     `chatgpt2codex init: initialized state dir ${stateDir} with ${registry.length} project(s) from ${workspaceRoot}`,
   );
+  console.error(`chatgpt2codex init: MCP instance ${identity.displayName} (${identity.instanceId})`);
 
   // PRD §11 SR-04: owner secret lives only as a hash on disk; the plaintext
   // is generated here and shown to the operator exactly once. Re-running
@@ -287,6 +306,22 @@ async function cmdInit(flags: Record<string, string | boolean>): Promise<void> {
       "Store this securely (e.g. a password manager). It is required to approve the OAuth /authorize prompt when a ChatGPT/MCP client connects over `chatgpt2codex serve --http`.",
     );
   }
+}
+
+/** Show or update the stable per-install MCP identity. */
+async function cmdDevice(flags: Record<string, string | boolean>): Promise<void> {
+  const stateDir = defaultStateDir();
+  const requestedName = typeof flags["set-name"] === "string" ? flags["set-name"] : undefined;
+  if (flags["set-name"] !== undefined && requestedName === undefined) {
+    console.error("usage: chatgpt2codex device [--status] [--set-name <name>]");
+    process.exitCode = 1;
+    return;
+  }
+  const identity = await ensureDeviceIdentity(stateDir, {
+    instanceId: process.env.CHATGPT2CODEX_INSTANCE_ID,
+    displayName: requestedName === undefined ? process.env.CHATGPT2CODEX_DISPLAY_NAME : requireDisplayName(requestedName),
+  });
+  console.log(JSON.stringify({ ...identity, stateDir }, null, 2));
 }
 
 async function readStdin(): Promise<string> {
@@ -332,7 +367,7 @@ async function cmdOwnerToken(flags: Record<string, string | boolean>): Promise<v
 }
 
 /**
- * `chatgpt2codex control <list|approve|approve-all|reject|kill|preflight|auto> [actionId]`
+ * `chatgpt2codex control <list|approve|approve-all|reject|kill|preflight|auto|grant> [actionId]`
  *
  * The local-only human-approval surface for Option B desktop control
  * (src/control/queue.ts). This is the mechanism a local approver (today:
@@ -464,6 +499,110 @@ async function cmdControl(positional: string[], flags: Record<string, string | b
           return;
       }
     }
+    case "grant": {
+      const mode = actionId;
+      switch (mode) {
+        case "on": {
+          if (!isControlEnabled()) {
+            console.error("Desktop control is disabled; refusing to issue a Control Grant.");
+            process.exitCode = 1;
+            return;
+          }
+          const apps =
+            typeof flags.apps === "string"
+              ? flags.apps.split(",").map((entry) => entry.trim()).filter(Boolean)
+              : [];
+          const requestedProject = typeof flags.project === "string" ? flags.project.trim() : undefined;
+          const requestedRoot = typeof flags["project-root"] === "string" ? path.resolve(flags["project-root"]) : undefined;
+          if (apps.length === 0 || (!requestedProject && !requestedRoot)) {
+            console.error(
+              "usage: chatgpt2codex control grant on (--project <id> | --project-root <path>) --apps <a,b> [--minutes N] [--kinds screenshot,click,type,key] [--max N]",
+            );
+            process.exitCode = 1;
+            return;
+          }
+          const store = new Store(stateDir);
+          let projects = await store.loadProjects();
+          let project = requestedRoot
+            ? projects.find((entry) => path.resolve(entry.root) === requestedRoot)
+            : projects.find(
+                (entry) => entry.projectId === requestedProject || entry.name === requestedProject || entry.aliases.includes(requestedProject ?? ""),
+              );
+          // The status-bar can issue a grant during first-run setup, before
+          // `serve` has populated the registry. Because this is a local-only
+          // explicit path, discover that exact root and persist it without
+          // broadening the scan beyond the requested project directory.
+          if (!project && requestedRoot) {
+            const discovered = (await scanWorkspace(requestedRoot)).find(
+              (entry) => path.resolve(entry.root) === requestedRoot,
+            );
+            if (discovered) {
+              const collision = projects.find(
+                (entry) => entry.projectId === discovered.projectId && path.resolve(entry.root) !== requestedRoot,
+              );
+              if (collision) {
+                console.error(`Control Grant project id collision: ${discovered.projectId}`);
+                process.exitCode = 1;
+                return;
+              }
+              projects = [...projects.filter((entry) => path.resolve(entry.root) !== requestedRoot), discovered];
+              await store.saveProjects(projects);
+              project = discovered;
+            }
+          }
+          if (!project) {
+            console.error(`Control Grant project not found: ${requestedRoot ?? requestedProject}`);
+            process.exitCode = 1;
+            return;
+          }
+          const kinds =
+            typeof flags.kinds === "string"
+              ? flags.kinds
+                  .split(",")
+                  .map((entry) => entry.trim())
+                  .filter(
+                    (entry): entry is ControlGrantKind =>
+                      entry === "screenshot" || entry === "click" || entry === "type" || entry === "key",
+                  )
+              : undefined;
+          const minutes = typeof flags.minutes === "string" ? Number(flags.minutes) : undefined;
+          const maxActions = typeof flags.max === "string" ? Number(flags.max) : undefined;
+          const identity = await ensureDeviceIdentity(stateDir, {
+            instanceId: process.env.CHATGPT2CODEX_INSTANCE_ID,
+            displayName: process.env.CHATGPT2CODEX_DISPLAY_NAME,
+          });
+          const grant = await issueControlGrant(stateDir, {
+            instanceId: identity.instanceId,
+            projectId: project.projectId,
+            apps,
+            kinds: kinds && kinds.length > 0 ? kinds : undefined,
+            minutes,
+            maxActions,
+          });
+          // A fresh local grant is an explicit local-human resume operation,
+          // equivalent to a fresh local control lease.
+          await clearKill(stateDir);
+          console.log(JSON.stringify(grant, null, 2));
+          return;
+        }
+        case "off": {
+          await clearControlGrant(stateDir);
+          console.log(JSON.stringify({ controlGrantActive: false }));
+          return;
+        }
+        case "status": {
+          const grant = await readControlGrant(stateDir);
+          console.log(JSON.stringify(grant ? { controlGrantActive: true, ...grant } : { controlGrantActive: false }, null, 2));
+          return;
+        }
+        default:
+          console.error(
+            "usage: chatgpt2codex control grant <on (--project <id> | --project-root <path>) --apps a,b [--minutes N] [--kinds screenshot,click,type,key] [--max N] | off | status>",
+          );
+          process.exitCode = 1;
+          return;
+      }
+    }
     case "reject": {
       if (!actionId) {
         console.error("usage: chatgpt2codex control reject <actionId>");
@@ -509,7 +648,7 @@ async function cmdControl(positional: string[], flags: Record<string, string | b
       return;
     }
     default:
-      console.error("usage: chatgpt2codex control <list|approve|approve-all|reject|kill|preflight|auto> [actionId]");
+      console.error("usage: chatgpt2codex control <list|approve|approve-all|reject|kill|preflight|auto|grant> [actionId]");
       process.exitCode = 1;
   }
 }
@@ -553,6 +692,8 @@ async function cmdDoctor(): Promise<void> {
   console.log(`git: ${gitVersion ?? "not found"}`);
   console.log(`workspace: ${workspacePath}`);
   console.log(`state dir: ${stateDir}`);
+  const identity = await ensureDeviceIdentity(stateDir);
+  console.log(`mcp instance: ${identity.displayName} (${identity.instanceId})`);
   console.log(`registered tools: ${toolCount}`);
   console.log(
     `http/oauth: owner token ${ownerTokenReady ? "configured" : "NOT SET — run `chatgpt2codex init` to generate one"}`,
@@ -580,6 +721,9 @@ async function main(): Promise<void> {
     case "doctor":
       await cmdDoctor();
       break;
+    case "device":
+      await cmdDevice(flags);
+      break;
     case "owner-token":
       await cmdOwnerToken(flags);
       break;
@@ -588,7 +732,7 @@ async function main(): Promise<void> {
       break;
     default:
       console.error(
-        "usage: chatgpt2codex <serve|init|doctor|owner-token|control> [--workspace <path>] [--active-project-root <path>] [--stdio | --http [--port 7979] [--public-url <origin>]]",
+        "usage: chatgpt2codex <serve|init|device|doctor|owner-token|control> [--workspace <path>] [--active-project-root <path>] [--stdio | --http [--port 7979] [--public-url <origin>]]",
       );
       process.exitCode = 1;
   }

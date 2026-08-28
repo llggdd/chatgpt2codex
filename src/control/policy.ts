@@ -3,28 +3,26 @@ import { DomainError, ErrorCode } from "../types.js";
 /**
  * Option B (human-confirmed desktop control) policy primitives.
  *
- * Two independent gates must both be satisfied before any of the 4 control
- * tools can be reached at all:
+ * Independent gates must be satisfied before any control tool can act:
  *  1. Feature flag `CHATGPT2CODEX_CONTROL` (isControlEnabled) — enabled by
  *     default; set it to "0"/"false"/"off" (case-insensitive) to opt out.
- *  2. A `control` lease preset explicitly granted via project_select
- *     (enforced separately by src/workspace/lease-guard.ts).
- * Neither gate alone is sufficient. Gate 1 only controls whether the tools
- * are registered/reachable at all — even with it on, gate 2 (and the
- * ChatGPT tools/list hide + generic call-tool bridge block, which apply
- * unconditionally) still stand between ChatGPT and any control action.
+ *  2. Either a local `control` lease or a short-lived, bounded Control Grant
+ *     issued through the local CLI/status bar.
+ *  3. A live per-app allowlist plus the sensitive-app denylist.
+ * Remote callers cannot create either authorization path.
  */
 
 const CONTROL_ENV_FLAG = "CHATGPT2CODEX_CONTROL";
 const CONTROL_ALLOWLIST_ENV_FLAG = "CHATGPT2CODEX_CONTROL_ALLOWLIST";
 const CONTROL_CHATGPT_ENV_FLAG = "CHATGPT2CODEX_CONTROL_CHATGPT";
 
-/** Names of the 4 desktop-control MCP tools. Shared denylist used by:
+/** Names of the desktop-control MCP tools. Shared denylist used by:
  *  - src/server/tools.ts installChatGptToolListHandler (hide from ChatGPT tools/list)
  *  - src/server/actions.ts callRegisteredTool (block the generic call-tool/action bridge) */
 export const CONTROL_TOOL_NAMES: ReadonlySet<string> = new Set([
   "computer_screenshot",
   "computer_request_action",
+  "computer_task_execute",
   "computer_action_status",
   "computer_kill_switch",
 ]);
@@ -44,7 +42,7 @@ export function isControlEnabled(env: NodeJS.ProcessEnv = process.env): boolean 
 }
 
 /**
- * Owner opt-in flag ("ChatGPT confirm" model): expose the 4 desktop-control
+ * Owner opt-in flag ("ChatGPT confirm" model): expose the desktop-control
  * tools to ChatGPT's tools/list and the generic action bridge, and let a
  * confirmed `computer_request_action` call execute immediately through the
  * executor path (src/control/tools.ts handleComputerRequestAction) instead of
@@ -86,6 +84,11 @@ export const SENSITIVE_APP_DENYLIST: readonly string[] = [
   "coinbase",
   "metamask",
   "crypto wallet",
+  "terminal",
+  "iterm",
+  "warp",
+  "script editor",
+  "automator",
 ];
 
 export function isSensitiveApp(appName: string | undefined): boolean {

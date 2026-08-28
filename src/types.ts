@@ -1,3 +1,5 @@
+import type { DeviceIdentity } from "./identity/device.js";
+
 /**
  * chatgpt2codex shared contract.
  *
@@ -84,6 +86,8 @@ export interface Config {
 export interface ToolContext {
   workspaceRoot: string;
   stateDir: string;
+  /** Stable per-install identity used to disambiguate MCP/action instances. */
+  identity?: DeviceIdentity;
   /** Loaded/loadable project registry entries. */
   registry: ProjectRegistryEntry[];
   /** Append-only audit ledger sink. */
@@ -97,6 +101,24 @@ export interface ToolContext {
     getSession(): Promise<unknown>;
     setSession(s: unknown): Promise<void>;
   };
+  /** Optional per-connection session state. HTTP MCP connections use this
+   * to isolate active project/lease selections from other simultaneous
+   * clients; local stdio and Actions fall back to the persistent store. */
+  sessionStore?: {
+    getSession(): Promise<unknown>;
+    setSession(s: unknown): Promise<void>;
+  };
+  /**
+   * Compatibility lookup for remote clients that reconnect for every tool
+   * call instead of carrying the MCP session id. The HTTP gateway supplies a
+   * short-lived, client-bound lease snapshot; local/stdio callers leave this
+   * unset so their normal session isolation remains strict.
+   */
+  remoteLeaseLookup?: (projectId: string) => Promise<Lease | null>;
+  /** Stable identifier for the transport/client session, when available. */
+  sessionId?: string;
+  /** Optional task context used when a tool is executing inside a task. */
+  taskId?: string;
   config: Config;
   /** True for an MCP server instance handed a remote/network transport
    * session (currently: src/server/http.ts's /mcp endpoint, which is how
@@ -107,6 +129,12 @@ export interface ToolContext {
    * desktop-control tools are exposed to ChatGPT
    * (src/control/policy.ts isControlChatGptExposed). */
   remote?: boolean;
+  /**
+   * Identity captured when a remote transport was initialized. This is kept
+   * separate from `identity` so an embedder cannot accidentally validate a
+   * later request against a newly replaced identity object.
+   */
+  boundInstanceId?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -149,6 +177,16 @@ export enum ErrorCode {
   CONFIRMATION_PENDING = "CONFIRMATION_PENDING",
   SENSITIVE_TARGET_BLOCKED = "SENSITIVE_TARGET_BLOCKED",
   CONTROL_KILLED = "CONTROL_KILLED",
+  /** A caller tried to mutate a different named MCP instance. */
+  TARGET_INSTANCE_MISMATCH = "TARGET_INSTANCE_MISMATCH",
+  /** A remote side-effecting call omitted the required instance target. */
+  TARGET_INSTANCE_REQUIRED = "TARGET_INSTANCE_REQUIRED",
+  /** A requested background task does not exist in this runtime state. */
+  TASK_NOT_FOUND = "TASK_NOT_FOUND",
+  /** A queued/running task was interrupted when the local process restarted. */
+  TASK_INTERRUPTED = "TASK_INTERRUPTED",
+  /** A background task was canceled before it completed. */
+  TASK_CANCELED = "TASK_CANCELED",
 }
 
 /** Thrown by any domain-level failure. Tool boundary must catch and map. */

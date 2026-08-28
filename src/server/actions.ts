@@ -6,6 +6,8 @@ import { createE2eScreenshotShare, readE2eScreenshotShare } from "../e2e/screens
 import { CONTROL_TOOL_NAMES, isControlChatGptExposed } from "../control/policy.js";
 import { createServer as createMcpServer } from "./mcp-server.js";
 import { TOOL_AVAILABILITY_GATE, toolCallProof } from "./tool-proof.js";
+import { actionBridgeName, fallbackDeviceIdentity, mcpServerName } from "../identity/device.js";
+import { isTargetInstanceTool } from "../instance-target.js";
 import { normalizeObjectSchema, safeParseAsync, getParseErrorMessage } from "@modelcontextprotocol/sdk/server/zod-compat.js";
 
 interface CallToolResultLike {
@@ -29,6 +31,15 @@ interface ActionRoute {
 }
 
 const ACTION_ROUTES: ActionRoute[] = [
+  {
+    path: "/actions/device-identity",
+    tool: "device_identity",
+    operationId: "device_identity",
+    summary: "Identify the connected MCP instance",
+    description:
+      "Returns the stable per-install identity and display name. Call this when multiple computers or ChatGPT registrations may be connected, then confirm the instance before editing files.",
+    schema: "EmptyInput",
+  },
   {
     path: "/actions/agent-guide",
     tool: "agent_guide",
@@ -57,12 +68,52 @@ const ACTION_ROUTES: ActionRoute[] = [
     schema: "GoalLoopInput",
   },
   {
+    path: "/actions/task-start",
+    tool: "task_start",
+    operationId: "task_start",
+    summary: "Queue a background task",
+    description: "Queue a guarded command, shell, or E2E task and poll it with task_status/task_result.",
+    schema: "TaskStartInput",
+  },
+  {
+    path: "/actions/task-execute",
+    tool: "task_execute",
+    operationId: "task_execute",
+    summary: "Queue a goal execution",
+    description: "Persist one goal; queue it when an explicit guarded command, shell, or E2E execution spec is present, otherwise return the next safe planning steps.",
+    schema: "TaskExecuteInput",
+  },
+  {
+    path: "/actions/task-status",
+    tool: "task_status",
+    operationId: "task_status",
+    summary: "Read background task status",
+    description: "Read one background task or recent tasks without blocking.",
+    schema: "TaskStatusInput",
+  },
+  {
+    path: "/actions/task-cancel",
+    tool: "task_cancel",
+    operationId: "task_cancel",
+    summary: "Cancel a background task",
+    description: "Request cancellation of a queued or running local task.",
+    schema: "TaskCancelInput",
+  },
+  {
+    path: "/actions/task-result",
+    tool: "task_result",
+    operationId: "task_result",
+    summary: "Read a background task result",
+    description: "Read the persisted result or error for a background task.",
+    schema: "TaskResultInput",
+  },
+  {
     path: "/actions/project-select",
     tool: "project_select",
     operationId: "project_select",
     summary: "Select the active local project",
     description:
-      "Selects and leases the project. GPT Actions default to preset=full-write when preset is omitted, so source edits can be applied directly through chatgpt2codex instead of returning copy/paste scripts. Use preset=image-only only for image-only saves.",
+      "Selects and leases the project. GPT Actions default to preset=full-write when preset is omitted, so source edits can be applied directly through chatgpt2codex instead of returning copy/paste scripts. Use preset=image-only only for image-only saves. Remote calls should include the exact targetInstanceId returned by device_identity; bound endpoints infer it for legacy clients.",
     schema: "ProjectSelectInput",
   },
   {
@@ -78,7 +129,8 @@ const ACTION_ROUTES: ActionRoute[] = [
     tool: "workspace_refresh_index",
     operationId: "workspace_refresh_index",
     summary: "Refresh the local project index",
-    description: "Rescan the local workspace root and refresh chatgpt2codex's project registry.",
+    description:
+      "Rescan the local workspace root and refresh chatgpt2codex's project registry. Container workspaces are searched up to two directory levels by default; project-marker folders stop further traversal.",
     schema: "WorkspaceRefreshIndexInput",
   },
   {
@@ -104,6 +156,14 @@ const ACTION_ROUTES: ActionRoute[] = [
     summary: "Read project rules",
     description: "Read local AGENTS/CLAUDE project rules through chatgpt2codex, with secret redaction.",
     schema: "ProjectOnlyInput",
+  },
+  {
+    path: "/actions/project-bootstrap",
+    tool: "project_bootstrap",
+    operationId: "project_bootstrap",
+    summary: "Bootstrap project context",
+    description: "Return project metadata, rules, status, commands, key files, and optional topic matches in one call.",
+    schema: "ProjectBootstrapInput",
   },
   {
     path: "/actions/code-search",
@@ -134,7 +194,7 @@ const ACTION_ROUTES: ActionRoute[] = [
     tool: "file_apply_patch",
     operationId: "file_apply_patch",
     summary: "Apply a project file patch",
-    description: "Apply a Codex-style patch directly to the selected local project. Requires project_select preset=full-write; do not return shell scripts for the user to paste.",
+    description: "Apply a Codex-style patch directly to the selected local project. Requires project_select preset=full-write; do not return shell scripts for the user to paste. Remote calls should include the exact targetInstanceId returned by device_identity; bound endpoints infer it for legacy clients.",
     schema: "FileApplyPatchInput",
   },
   {
@@ -142,8 +202,16 @@ const ACTION_ROUTES: ActionRoute[] = [
     tool: "file_create",
     operationId: "file_create",
     summary: "Create a project file",
-    description: "Create or overwrite a project-confined file directly through chatgpt2codex. Requires project_select preset=full-write.",
+    description: "Create or overwrite a project-confined file directly through chatgpt2codex. Requires project_select preset=full-write. Remote calls should include the exact targetInstanceId returned by device_identity; bound endpoints infer it for legacy clients.",
     schema: "FileCreateInput",
+  },
+  {
+    path: "/actions/change-and-verify",
+    tool: "change_and_verify",
+    operationId: "change_and_verify",
+    summary: "Apply and verify a change",
+    description: "Apply a hash-guarded patch, create a checkpoint, select safe tests from changed files, and return evidence. Remote calls should include the exact targetInstanceId returned by device_identity; bound endpoints infer it for legacy clients.",
+    schema: "ChangeAndVerifyInput",
   },
   {
     path: "/actions/command-list",
@@ -158,7 +226,7 @@ const ACTION_ROUTES: ActionRoute[] = [
     tool: "command_run",
     operationId: "command_run",
     summary: "Run allowlisted project command",
-    description: "Run an allowlisted project command through chatgpt2codex.",
+    description: "Run an allowlisted project command through chatgpt2codex. Remote calls should include the exact targetInstanceId returned by device_identity; bound endpoints infer it for legacy clients.",
     schema: "CommandRunInput",
   },
   {
@@ -166,7 +234,7 @@ const ACTION_ROUTES: ActionRoute[] = [
     tool: "local_shell_run",
     operationId: "local_shell_run",
     summary: "Run local project shell",
-    description: "Run a guarded local shell command inside the project through chatgpt2codex. Network/destructive intents remain approval-gated by the tool.",
+    description: "Run a guarded local shell command inside the project through chatgpt2codex. Network/destructive intents remain approval-gated by the tool. Remote calls should include the exact targetInstanceId returned by device_identity; bound endpoints infer it for legacy clients.",
     schema: "LocalShellRunInput",
   },
   {
@@ -314,33 +382,34 @@ const ACTION_ROUTES: ActionRoute[] = [
 ];
 
 const OPENAPI_ACTION_TOOL_NAMES = new Set([
+  "device_identity",
   "agent_guide",
   "goal_intake",
   "goal_loop",
+  "task_start",
+  "task_execute",
+  "task_status",
+  "task_cancel",
+  "task_result",
   "project_select",
   "workspace_list_projects",
   "project_status",
   "project_rules",
+  "project_bootstrap",
   "code_search",
   "file_read_slice",
   "file_apply_patch",
   "file_create",
+  "change_and_verify",
   "command_run",
   "local_shell_run",
   "e2e_start_server",
-  "e2e_open_target",
   "e2e_run_command",
   "e2e_test_and_show_screenshot",
   "e2e_screenshot",
   "e2e_open_url_screenshot",
-  "repo_status",
-  "repo_diff_summary",
-  "show_changes",
-  "git_commit",
-  "git_push",
   "save_chatgpt_image",
   "save_chatgpt_image_from_url",
-  "list_images",
 ]);
 
 function openApiActionRoutes(): ActionRoute[] {
@@ -349,6 +418,38 @@ function openApiActionRoutes(): ActionRoute[] {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * The dedicated Actions document is hand-authored for readability, while
+ * MCP tool schemas are generated from zod. Add the same explicit target field
+ * to every side-effecting dedicated route at the final OpenAPI boundary so
+ * current clients can pin the instance. The runtime still infers a bound
+ * endpoint's own id for legacy clients with a cached schema.
+ */
+function withRequiredActionInstanceTargets(schemas: Record<string, unknown>): Record<string, unknown> {
+  for (const route of openApiActionRoutes()) {
+    if (!isTargetInstanceTool(route.tool)) continue;
+    const schema = schemas[route.schema];
+    if (!isRecord(schema)) continue;
+    const properties = isRecord(schema.properties) ? schema.properties : {};
+    const required = Array.isArray(schema.required)
+      ? schema.required.filter((value): value is string => typeof value === "string")
+      : [];
+    schemas[route.schema] = {
+      ...schema,
+      properties: {
+        ...properties,
+        targetInstanceId: {
+          type: "string",
+          description:
+            "Copy the exact instanceId returned by device_identity. Bound MCP/Actions endpoints infer their own id for legacy clients that lack this field.",
+        },
+      },
+      required: Array.from(new Set([...required, "targetInstanceId"])),
+    };
+  }
+  return schemas;
 }
 
 function actionInput(body: unknown): Record<string, unknown> {
@@ -435,7 +536,16 @@ async function callRegisteredTool(
       content: [{ type: "text", text: message }],
     };
   }
-  const server = await createMcpServer(ctx);
+  // Treat the HTTP Action bridge as a remote caller. In particular this
+  // lets desktop-control handlers require a separately local-issued Control
+  // Grant instead of inheriting or creating a local session control lease.
+  const identity = ctx.identity ?? fallbackDeviceIdentity();
+  const server = await createMcpServer({
+    ...ctx,
+    identity,
+    remote: true,
+    boundInstanceId: identity.instanceId,
+  });
   const tools = (server as unknown as { _registeredTools?: Record<string, RegisteredToolLike> })._registeredTools;
   const registered = tools?.[toolName];
   const handler = registered?.handler;
@@ -523,7 +633,7 @@ async function actionResponse(ctx: ToolContext, publicOrigin: string, tool: stri
   return {
     ok,
     tool,
-    toolCall: toolCallProof(tool, ok),
+    toolCall: toolCallProof(tool, ok, ctx.identity),
     text: inlineText,
     imageMarkdown: enriched.markdown[0],
     imageMarkdownList: enriched.markdown,
@@ -532,7 +642,7 @@ async function actionResponse(ctx: ToolContext, publicOrigin: string, tool: stri
   };
 }
 
-function openApiSpec(publicOrigin: string): Record<string, unknown> {
+function openApiSpec(publicOrigin: string, identity = fallbackDeviceIdentity()): Record<string, unknown> {
   const paths: Record<string, unknown> = {
     "/actions/health": {
       get: {
@@ -573,11 +683,15 @@ function openApiSpec(publicOrigin: string): Record<string, unknown> {
   };
 
   for (const route of openApiActionRoutes()) {
+    const remoteTargetGuidance =
+      isTargetInstanceTool(route.tool) && !route.description.includes("targetInstanceId")
+        ? " Remote calls should include the exact targetInstanceId returned by device_identity; bound endpoints infer it for legacy clients."
+        : "";
     paths[route.path] = {
       post: {
         operationId: route.tool,
         summary: route.summary,
-        description: `ChatGPT_To_Codex tool: ${route.tool}. ${route.description}`,
+        description: `ChatGPT_To_Codex tool: ${route.tool}. ${route.description}${remoteTargetGuidance}`,
         security: [{ ownerBearer: [] }],
         requestBody: {
           required: route.schema !== "EmptyInput",
@@ -600,10 +714,10 @@ function openApiSpec(publicOrigin: string): Record<string, unknown> {
   return {
     openapi: "3.1.0",
     info: {
-      title: "chatgpt2codex Custom GPT Actions",
-      version: "0.1.6",
+      title: `${identity.displayName} Custom GPT Actions`,
+      version: "0.2.0",
       description:
-        "OpenAPI bridge for Custom GPTs. This does not call OpenAI Codex or spend Codex quota; ChatGPT drives local coding actions through chatgpt2codex. Hard gate: do not claim local project inspection, edits, tests, commits, or image saves unless a current-turn ActionToolResponse includes ok=true and toolCall.namespace=ChatGPT_To_Codex. If the active ChatGPT app was Image Generation/ImageGen, image_gen, python_user_visible, or a text-only answer, no chatgpt2codex local work happened; reselect/reconnect ChatGPT To Codex or refresh this Action schema. For /goal or broad implementation prompts, call goal_intake or goal_loop immediately before long reasoning. This compact schema stays under 30 operations including action_health and call_tool, and exposes exact tool names such as workspace_list_projects, project_select, code_search, file_read_slice, file_apply_patch, file_create, local_shell_run, and e2e_test_and_show_screenshot for source editing and E2E proof. It avoids broad context-pack actions that ChatGPT safety may block; inspect with code_search followed by narrow file_read_slice calls instead. It also exposes E2E server/app launch plus screenshot capture. Hidden tools remain reachable through call_tool. ChatGPT's sandbox cannot write /Users/... directly; use these actions. For generated images, use a Share/Copy Link/content URL, copied image, download, or local path with save_chatgpt_image/save_chatgpt_image_from_url.",
+        "OpenAPI bridge for Custom GPTs. This does not call OpenAI Codex or spend Codex quota; ChatGPT drives local coding actions through chatgpt2codex. Hard gate: do not claim local project inspection, edits, tests, commits, or image saves unless a current-turn ActionToolResponse includes ok=true and toolCall.namespace=ChatGPT_To_Codex. If the active ChatGPT app was Image Generation/ImageGen, image_gen, python_user_visible, or a text-only answer, no chatgpt2codex local work happened; reselect/reconnect ChatGPT To Codex or refresh this Action schema. For /goal or broad implementation prompts, call goal_intake or goal_loop immediately before long reasoning. This compact schema stays under 30 operations including action_health and call_tool, and exposes exact tool names such as workspace_list_projects, project_select, project_bootstrap, code_search, file_read_slice, file_apply_patch, file_create, change_and_verify, task_execute/task_start/task_status/task_result, local_shell_run, and e2e_test_and_show_screenshot for source editing, queued verification, and E2E proof. It avoids broad context-pack actions that ChatGPT safety may block; inspect with code_search followed by narrow file_read_slice calls instead. It also exposes E2E server/app launch plus screenshot capture. Hidden tools remain reachable through call_tool. ChatGPT's sandbox cannot write /Users/... directly; use these actions. Call device_identity first and pass the exact targetInstanceId on every remote side-effecting call; bound endpoints infer it for legacy clients that lack the field, while an explicitly mismatched target is rejected before local state changes. For generated images, use a Share/Copy Link/content URL, copied image, download, or local path with save_chatgpt_image/save_chatgpt_image_from_url.",
       "x-chatgpt2codex-tool-proof": TOOL_AVAILABILITY_GATE,
       "x-chatgpt2codex-openapi-operation-count": Object.keys(paths).length,
       "x-chatgpt2codex-tool-names": openApiActionRoutes().map((route) => route.tool),
@@ -619,7 +733,7 @@ function openApiSpec(publicOrigin: string): Record<string, unknown> {
           description: "Use the chatgpt2codex owner token shown at init/setup time. Never commit it.",
         },
       },
-      schemas: {
+      schemas: withRequiredActionInstanceTargets({
         EmptyInput: { type: "object", additionalProperties: false, properties: {} },
         CallToolInput: {
           type: "object",
@@ -634,7 +748,8 @@ function openApiSpec(publicOrigin: string): Record<string, unknown> {
             input: {
               type: "object",
               additionalProperties: true,
-              description: "Input object passed directly to the named chatgpt2codex MCP tool.",
+              description:
+                "Input object passed directly to the named chatgpt2codex MCP tool. For side-effecting tools, include the exact targetInstanceId returned by device_identity.",
             },
           },
         },
@@ -651,6 +766,7 @@ function openApiSpec(publicOrigin: string): Record<string, unknown> {
             projectId: { type: "string", description: "Optional known project id/name." },
             mode: { type: "string", enum: ["implement", "research", "debug", "review", "plan"] },
             urgency: { type: "string", enum: ["normal", "fast"] },
+            targetInstanceId: { type: "string", description: "Optional stable instance id returned by device_identity." },
           },
         },
         GoalLoopInput: {
@@ -673,7 +789,89 @@ function openApiSpec(publicOrigin: string): Record<string, unknown> {
               type: "string",
               description: "Short summary of the previous inspect/edit/verify batch before continuing.",
             },
+            targetInstanceId: { type: "string", description: "Optional stable instance id returned by device_identity." },
           },
+        },
+        TaskStartInput: {
+          type: "object",
+          additionalProperties: false,
+          required: ["projectId", "kind"],
+          properties: {
+            projectId: { type: "string" },
+            kind: { type: "string", enum: ["command", "shell", "e2e"] },
+            access: { type: "string", enum: ["read", "write"] },
+            commandId: { type: "string" },
+            command: { type: "string" },
+            args: { type: "array", items: { type: "string" } },
+            cwd: { type: "string" },
+            timeoutSec: { type: "integer", minimum: 1, maximum: 900 },
+            maxRetries: { type: "integer", minimum: 0, maximum: 3, description: "Retries only safe verify-tier commands; write/shell/E2E tasks are not replayed automatically." },
+            intent: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                writesWorkspace: { type: "boolean" },
+                needsNetwork: { type: "boolean" },
+                destructive: { type: "boolean" },
+                reason: { type: "string" },
+              },
+            },
+            targetInstanceId: { type: "string" },
+          },
+        },
+        TaskExecuteInput: {
+          type: "object",
+          additionalProperties: false,
+          required: ["goal"],
+          properties: {
+            goal: { type: "string", description: "Human-readable goal stored with the task for progress and audit context." },
+            projectId: { type: "string", description: "Optional project id/name; omit to get a project-selection plan." },
+            kind: { type: "string", enum: ["command", "shell", "e2e"], description: "Optional execution kind; omit to get an explicit-spec plan." },
+            access: { type: "string", enum: ["read", "write"] },
+            commandId: { type: "string", description: "Allowlisted command id when kind=command." },
+            command: { type: "string", description: "Guarded shell command when kind=shell; optional for discovered E2E." },
+            args: { type: "array", items: { type: "string" } },
+            cwd: { type: "string" },
+            timeoutSec: { type: "integer", minimum: 1, maximum: 900 },
+            maxRetries: { type: "integer", minimum: 0, maximum: 3, description: "Retries only safe verify-tier commands; write/shell/E2E tasks are not replayed automatically." },
+            intent: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                writesWorkspace: { type: "boolean" },
+                needsNetwork: { type: "boolean" },
+                destructive: { type: "boolean" },
+                reason: { type: "string" },
+              },
+            },
+            targetInstanceId: { type: "string" },
+          },
+        },
+        TaskStatusInput: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            taskId: { type: "string" },
+            projectId: { type: "string" },
+            status: { type: "string", enum: ["queued", "running", "succeeded", "failed", "canceled"] },
+            limit: { type: "integer", minimum: 1, maximum: 100 },
+          },
+        },
+        TaskCancelInput: {
+          type: "object",
+          additionalProperties: false,
+          required: ["taskId"],
+          properties: {
+            taskId: { type: "string" },
+            reason: { type: "string", maxLength: 500 },
+            targetInstanceId: { type: "string" },
+          },
+        },
+        TaskResultInput: {
+          type: "object",
+          additionalProperties: false,
+          required: ["taskId"],
+          properties: { taskId: { type: "string" } },
         },
         WorkspaceListProjectsInput: {
           type: "object",
@@ -689,7 +887,7 @@ function openApiSpec(publicOrigin: string): Record<string, unknown> {
           type: "object",
           additionalProperties: false,
           properties: {
-            depth: { type: "integer", minimum: 1 },
+            depth: { type: "integer", minimum: 1, maximum: 5, description: "Descendant directory levels to scan; defaults to 2." },
             includeHidden: { type: "boolean" },
           },
         },
@@ -707,6 +905,17 @@ function openApiSpec(publicOrigin: string): Record<string, unknown> {
           required: ["projectId"],
           properties: { projectId: { type: "string" } },
         },
+        ProjectBootstrapInput: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            projectId: { type: "string" },
+            name: { type: "string" },
+            topic: { type: "string" },
+            includePaths: { type: "array", items: { type: "string" }, maxItems: 20 },
+            maxBytes: { type: "integer", minimum: 1, maximum: 100000 },
+          },
+        },
         ProjectSelectInput: {
           type: "object",
           additionalProperties: false,
@@ -720,6 +929,7 @@ function openApiSpec(publicOrigin: string): Record<string, unknown> {
               description: "Defaults to full-write on the GPT Actions bridge when omitted.",
             },
             confirmSwitch: { type: "boolean" },
+            targetInstanceId: { type: "string", description: "Optional stable instance id returned by device_identity." },
           },
         },
         CodeSearchInput: {
@@ -753,6 +963,7 @@ function openApiSpec(publicOrigin: string): Record<string, unknown> {
             projectId: { type: "string" },
             patch: { type: "string", description: "Codex-style *** Begin Patch envelope." },
             preconditionHashes: { type: "object", additionalProperties: { type: "string" } },
+            targetInstanceId: { type: "string", description: "Optional stable instance id returned by device_identity." },
           },
         },
         FileCreateInput: {
@@ -764,6 +975,21 @@ function openApiSpec(publicOrigin: string): Record<string, unknown> {
             path: { type: "string" },
             content: { type: "string" },
             overwrite: { type: "boolean" },
+            targetInstanceId: { type: "string", description: "Optional stable instance id returned by device_identity." },
+          },
+        },
+        ChangeAndVerifyInput: {
+          type: "object",
+          additionalProperties: false,
+          required: ["projectId", "patch"],
+          properties: {
+            projectId: { type: "string" },
+            patch: { type: "string", description: "Codex-style *** Begin Patch envelope." },
+            preconditionHashes: { type: "object", additionalProperties: { type: "string" } },
+            testCommandIds: { type: "array", items: { type: "string" }, maxItems: 3 },
+            maxTests: { type: "integer", minimum: 1, maximum: 3 },
+            maxRetries: { type: "integer", minimum: 0, maximum: 3, description: "Bounded verification reruns; no patch is invented automatically." },
+            targetInstanceId: { type: "string" },
           },
         },
         CommandRunInput: {
@@ -783,6 +1009,7 @@ function openApiSpec(publicOrigin: string): Record<string, unknown> {
                 expectedDurationSec: { type: "integer", minimum: 1 },
               },
             },
+            targetInstanceId: { type: "string", description: "Optional stable instance id returned by device_identity." },
           },
         },
         LocalShellRunInput: {
@@ -804,6 +1031,7 @@ function openApiSpec(publicOrigin: string): Record<string, unknown> {
                 destructive: { type: "boolean" },
               },
             },
+            targetInstanceId: { type: "string", description: "Optional stable instance id returned by device_identity." },
           },
         },
         E2eStartServerInput: {
@@ -826,6 +1054,7 @@ function openApiSpec(publicOrigin: string): Record<string, unknown> {
                 destructive: { type: "boolean" },
               },
             },
+            targetInstanceId: { type: "string", description: "Optional stable instance id returned by device_identity." },
           },
         },
         E2eOpenTargetInput: {
@@ -837,6 +1066,7 @@ function openApiSpec(publicOrigin: string): Record<string, unknown> {
             appName: { type: "string", description: "Installed macOS app name, e.g. Safari or ChatGPT." },
             appPath: { type: "string", description: "Absolute /Applications path or project-relative .app path." },
             args: { type: "array", items: { type: "string" } },
+            targetInstanceId: { type: "string", description: "Optional stable instance id returned by device_identity." },
           },
         },
         E2eRunCommandInput: {
@@ -862,6 +1092,7 @@ function openApiSpec(publicOrigin: string): Record<string, unknown> {
                 destructive: { type: "boolean" },
               },
             },
+            targetInstanceId: { type: "string", description: "Optional stable instance id returned by device_identity." },
           },
         },
         E2eTestAndShowScreenshotInput: {
@@ -878,6 +1109,7 @@ function openApiSpec(publicOrigin: string): Record<string, unknown> {
             timeoutSec: { type: "integer", minimum: 1, maximum: 900 },
             screenshotWaitMs: { type: "integer", minimum: 0, maximum: 30000 },
             openAfterCapture: { type: "boolean" },
+            targetInstanceId: { type: "string", description: "Optional stable instance id returned by device_identity." },
           },
         },
         E2eScreenshotInput: {
@@ -889,6 +1121,7 @@ function openApiSpec(publicOrigin: string): Record<string, unknown> {
             label: { type: "string" },
             waitMs: { type: "integer", minimum: 0, maximum: 30000 },
             openAfterCapture: { type: "boolean", description: "Open the screenshot on the Mac immediately after capture." },
+            targetInstanceId: { type: "string", description: "Optional stable instance id returned by device_identity." },
           },
         },
         E2eOpenUrlScreenshotInput: {
@@ -901,6 +1134,7 @@ function openApiSpec(publicOrigin: string): Record<string, unknown> {
             label: { type: "string" },
             waitMs: { type: "integer", minimum: 0, maximum: 30000 },
             openAfterCapture: { type: "boolean" },
+            targetInstanceId: { type: "string", description: "Optional stable instance id returned by device_identity." },
           },
         },
         CheckpointShowInput: {
@@ -910,6 +1144,7 @@ function openApiSpec(publicOrigin: string): Record<string, unknown> {
           properties: {
             projectId: { type: "string" },
             checkpointId: { type: "string" },
+            targetInstanceId: { type: "string", description: "Optional stable instance id returned by device_identity." },
           },
         },
         GitCommitInput: {
@@ -920,6 +1155,7 @@ function openApiSpec(publicOrigin: string): Record<string, unknown> {
             projectId: { type: "string" },
             message: { type: "string" },
             paths: { type: "array", items: { type: "string" } },
+            targetInstanceId: { type: "string", description: "Optional stable instance id returned by device_identity." },
           },
         },
         GitPushInput: {
@@ -930,6 +1166,7 @@ function openApiSpec(publicOrigin: string): Record<string, unknown> {
             projectId: { type: "string" },
             remote: { type: "string" },
             branch: { type: "string" },
+            targetInstanceId: { type: "string", description: "Optional stable instance id returned by device_identity." },
           },
         },
         SaveChatGptImageInput: {
@@ -943,6 +1180,7 @@ function openApiSpec(publicOrigin: string): Record<string, unknown> {
             source: { type: "string", enum: ["auto", "url", "clipboard", "download", "path"] },
             maxAgeSec: { type: "integer", minimum: 1, maximum: 86400 },
             metadata: { type: "object", additionalProperties: true },
+            targetInstanceId: { type: "string", description: "Optional stable instance id returned by device_identity." },
           },
         },
         ImportChatGptImageUrlInput: {
@@ -954,6 +1192,7 @@ function openApiSpec(publicOrigin: string): Record<string, unknown> {
             projectId: { type: "string" },
             destPath: { type: "string" },
             metadata: { type: "object", additionalProperties: true },
+            targetInstanceId: { type: "string", description: "Optional stable instance id returned by device_identity." },
           },
         },
         ListImagesInput: {
@@ -990,6 +1229,10 @@ function openApiSpec(publicOrigin: string): Record<string, unknown> {
           properties: {
             ok: { type: "boolean" },
             name: { type: "string" },
+            registrationName: { type: "string" },
+            serverName: { type: "string" },
+            instanceId: { type: "string" },
+            instanceName: { type: "string" },
             actions: { type: "integer" },
             toolAvailabilityGate: { "$ref": "#/components/schemas/ToolAvailabilityGate" },
           },
@@ -1020,6 +1263,10 @@ function openApiSpec(publicOrigin: string): Record<string, unknown> {
             proceedOnlyIfOk: { type: "boolean" },
             noToolResultMeansNoLocalWork: { type: "boolean" },
             instruction: { type: "string" },
+            instanceId: { type: "string" },
+            instanceName: { type: "string" },
+            instanceSuffix: { type: "string" },
+            serverName: { type: "string" },
           },
         },
         ErrorResponse: {
@@ -1030,18 +1277,25 @@ function openApiSpec(publicOrigin: string): Record<string, unknown> {
             error: { type: "string" },
           },
         },
-      },
+      }),
     },
   };
 }
 
 export function registerActionRoutes(app: Express, ctx: ToolContext, publicUrl: URL): void {
   const publicOrigin = publicUrl.origin;
+  const identity = ctx.identity ?? fallbackDeviceIdentity();
 
   app.get("/actions/health", (_req, res) => {
     res.json({
       ok: true,
+      // Keep the legacy `name` stable for existing Action schemas. The
+      // per-install bridge name is exposed separately for disambiguation.
       name: "chatgpt2codex-actions",
+      registrationName: actionBridgeName(identity),
+      serverName: mcpServerName(identity),
+      instanceId: identity.instanceId,
+      instanceName: identity.displayName,
       actions: ACTION_ROUTES.length,
       openApiOperations: openApiActionRoutes().length + 2,
       openApiToolNames: openApiActionRoutes().map((route) => route.tool),
@@ -1050,7 +1304,7 @@ export function registerActionRoutes(app: Express, ctx: ToolContext, publicUrl: 
   });
 
   app.get("/actions/openapi.json", (_req, res) => {
-    res.json(openApiSpec(publicOrigin));
+    res.json(openApiSpec(publicOrigin, identity));
   });
 
   app.get("/actions/e2e-screenshot-inline/:token/:filename", async (req, res) => {

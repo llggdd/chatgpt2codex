@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { storeOwnerToken } from "../auth/owner-token.js";
+import type { DeviceIdentity } from "../identity/device.js";
 import type { ToolContext } from "../types.js";
 import { createHttpServer, defaultHttpServerConfig } from "./http.js";
 
@@ -22,6 +23,11 @@ import { createHttpServer, defaultHttpServerConfig } from "./http.js";
  */
 
 const OWNER_TOKEN = "unit-test-owner-token-mcp-remote";
+
+const PNG_BYTES = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+  "base64",
+);
 
 function base64Url(bytes: Buffer): string {
   return bytes.toString("base64").replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/u, "");
@@ -43,12 +49,24 @@ async function getFreePort(): Promise<number> {
   return port;
 }
 
-function makeCtx(stateDir: string, projectRoot: string): ToolContext {
-  const registry = [{ projectId: "proj", name: "proj", root: projectRoot, aliases: [] }];
+function makeCtx(
+  stateDir: string,
+  projectRoot: string,
+  additionalProjects: Array<{ projectId: string; name: string; root: string; aliases: string[] }> = [],
+): ToolContext {
+  const registry = [{ projectId: "proj", name: "proj", root: projectRoot, aliases: [] }, ...additionalProjects];
   let currentSession: unknown = { activeProjectId: null, mode: "observe", lease: null };
+  const identity: DeviceIdentity = {
+    version: 1,
+    instanceId: "inst_remote-test-instance",
+    displayName: "Remote Test Instance",
+    createdAt: 0,
+    updatedAt: 0,
+  };
   return {
     workspaceRoot: path.dirname(projectRoot),
     stateDir,
+    identity,
     registry,
     ledger: { append: async () => undefined },
     store: {
@@ -163,6 +181,7 @@ describe("remote MCP session (/mcp, how ChatGPT connects) marks ctx.remote", () 
   let projectRoot: string;
   let stop: (() => Promise<void>) | undefined;
   let client: Client | undefined;
+  let secondClient: Client | undefined;
 
   beforeEach(async () => {
     stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "chatgpt2codex-mcp-remote-"));
@@ -173,12 +192,37 @@ describe("remote MCP session (/mcp, how ChatGPT connects) marks ctx.remote", () 
   afterEach(async () => {
     delete process.env.CHATGPT2CODEX_CONTROL_CHATGPT;
     await client?.close().catch(() => undefined);
+    await secondClient?.close().catch(() => undefined);
     client = undefined;
+    secondClient = undefined;
     await stop?.();
     stop = undefined;
     await fs.rm(stateDir, { recursive: true, force: true });
     await fs.rm(projectRoot, { recursive: true, force: true });
   }, 15_000);
+
+  it("accepts legacy remote clients without an instance field but still rejects a wrong explicit target", async () => {
+    const ctx = makeCtx(stateDir, projectRoot);
+    const app = await startApp(ctx);
+    stop = app.stop;
+
+    const token = await getMcpAccessToken(app.baseUrl);
+    client = await connectMcpClient(app.baseUrl, token);
+
+    const missing = (await client.callTool({
+      name: "project_select",
+      arguments: { projectId: "proj", reason: "missing instance target", preset: "full-write" },
+    })) as { isError?: boolean; structuredContent?: { lease?: { projectId?: string } } };
+    expect(missing.isError).toBeFalsy();
+    expect(missing.structuredContent?.lease?.projectId).toBe("proj");
+
+    const wrong = (await client.callTool({
+      name: "project_select",
+      arguments: { projectId: "proj", reason: "wrong instance target", preset: "full-write", targetInstanceId: "inst_other-computer-000000" },
+    })) as { isError?: boolean; structuredContent?: { code?: string } };
+    expect(wrong.isError).toBe(true);
+    expect(wrong.structuredContent?.code).toBe("TARGET_INSTANCE_MISMATCH");
+  }, 20_000);
 
   it("rejects project_select preset=control over /mcp, even with the ChatGPT-confirm exposure flag on", async () => {
     process.env.CHATGPT2CODEX_CONTROL_CHATGPT = "1";
@@ -191,7 +235,7 @@ describe("remote MCP session (/mcp, how ChatGPT connects) marks ctx.remote", () 
 
     const result = (await client.callTool({
       name: "project_select",
-      arguments: { projectId: "proj", reason: "remote self-grant attempt", preset: "control" },
+      arguments: { projectId: "proj", reason: "remote self-grant attempt", preset: "control", targetInstanceId: "inst_remote-test-instance" },
     })) as { isError?: boolean; structuredContent?: { code?: string } };
 
     expect(result.isError).toBe(true);
@@ -211,10 +255,94 @@ describe("remote MCP session (/mcp, how ChatGPT connects) marks ctx.remote", () 
 
     const result = (await client.callTool({
       name: "project_select",
-      arguments: { projectId: "proj", reason: "remote normal select", preset: "full-write" },
+      arguments: { projectId: "proj", reason: "remote normal select", preset: "full-write", targetInstanceId: "inst_remote-test-instance" },
     })) as { isError?: boolean; structuredContent?: { lease?: { preset?: string } } };
 
     expect(result.isError).toBeFalsy();
     expect(result.structuredContent?.lease?.preset).toBe("full-write");
   }, 20_000);
+
+  it("hands a lease to a legacy client that recreates the MCP connection per call", async () => {
+    const ctx = makeCtx(stateDir, projectRoot);
+    const app = await startApp(ctx);
+    stop = app.stop;
+
+    const token = await getMcpAccessToken(app.baseUrl);
+    client = await connectMcpClient(app.baseUrl, token);
+
+    // Omit targetInstanceId as an older cached code-x schema would. The
+    // bound remote endpoint accepts that legacy shape and publishes the
+    // resulting lease for the next connection belonging to this OAuth client.
+    const selection = (await client.callTool({
+      name: "project_select",
+      arguments: { projectId: "proj", reason: "legacy reconnect", preset: "full-write" },
+    })) as { isError?: boolean; structuredContent?: { lease?: { projectId?: string } } };
+    expect(selection.isError).toBeFalsy();
+    expect(selection.structuredContent?.lease?.projectId).toBe("proj");
+
+    await client.close();
+    client = undefined;
+
+    // A legacy client starts a fresh MCP initialize here, so there is no
+    // mcp-session-id and no per-connection lease. The server should bridge the
+    // short-lived lease instead of requiring project_select again.
+    secondClient = await connectMcpClient(app.baseUrl, token);
+    const shell = (await secondClient.callTool({
+      name: "local_shell_run",
+      arguments: { projectId: "proj", command: "printf legacy-session" },
+    })) as { isError?: boolean; structuredContent?: { exitCode?: number; stdoutSummary?: string } };
+    expect(shell.isError).toBeFalsy();
+    expect(shell.structuredContent?.exitCode).toBe(0);
+    expect(shell.structuredContent?.stdoutSummary).toContain("legacy-session");
+  }, 30_000);
+
+  it("keeps active project and lease state isolated across simultaneous MCP clients", async () => {
+    const secondProjectRoot = await fs.mkdtemp(path.join(os.tmpdir(), "chatgpt2codex-mcp-remote-second-project-"));
+    const sourceDir = await fs.mkdtemp(path.join(os.tmpdir(), "chatgpt2codex-mcp-remote-source-"));
+    const sourcePath = path.join(sourceDir, "fixture.png");
+    await fs.writeFile(sourcePath, PNG_BYTES);
+
+    try {
+      const ctx = makeCtx(stateDir, projectRoot, [
+        { projectId: "home", name: "home", root: secondProjectRoot, aliases: [] },
+      ]);
+      const app = await startApp(ctx);
+      stop = app.stop;
+
+      const token = await getMcpAccessToken(app.baseUrl);
+      client = await connectMcpClient(app.baseUrl, token);
+      secondClient = await connectMcpClient(app.baseUrl, token);
+
+      const [officeSelection, homeSelection] = await Promise.all([
+        client.callTool({
+          name: "project_select",
+          arguments: { projectId: "proj", reason: "office task", preset: "full-write", targetInstanceId: "inst_remote-test-instance" },
+        }),
+        secondClient.callTool({
+          name: "project_select",
+          arguments: { projectId: "home", reason: "home task", preset: "full-write", targetInstanceId: "inst_remote-test-instance" },
+        }),
+      ]);
+      expect((officeSelection as { structuredContent?: { lease?: { projectId?: string } } }).structuredContent?.lease?.projectId).toBe("proj");
+      expect((homeSelection as { structuredContent?: { lease?: { projectId?: string } } }).structuredContent?.lease?.projectId).toBe("home");
+
+      const [officeSave, homeSave] = await Promise.all([
+        client.callTool({
+          name: "save_chatgpt_image",
+          arguments: { source: "path", sourcePath, destPath: ".chatgpt2codex/images/office.png", targetInstanceId: "inst_remote-test-instance" },
+        }),
+        secondClient.callTool({
+          name: "save_chatgpt_image",
+          arguments: { source: "path", sourcePath, destPath: ".chatgpt2codex/images/home.png", targetInstanceId: "inst_remote-test-instance" },
+        }),
+      ]);
+      expect((officeSave as { structuredContent?: { project?: string } }).structuredContent?.project).toBe("proj");
+      expect((homeSave as { structuredContent?: { project?: string } }).structuredContent?.project).toBe("home");
+      await expect(fs.readFile(path.join(projectRoot, ".chatgpt2codex/images/office.png"))).resolves.toEqual(PNG_BYTES);
+      await expect(fs.readFile(path.join(secondProjectRoot, ".chatgpt2codex/images/home.png"))).resolves.toEqual(PNG_BYTES);
+    } finally {
+      await fs.rm(secondProjectRoot, { recursive: true, force: true });
+      await fs.rm(sourceDir, { recursive: true, force: true });
+    }
+  }, 30_000);
 });

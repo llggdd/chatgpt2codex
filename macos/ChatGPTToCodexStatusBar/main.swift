@@ -96,6 +96,18 @@ private let desktopLocalizationRows: [String: [String]] = [
     "autoApproveOffMenu": ["Turn off auto-approve", "자동 승인 끄기"],
     "autoApproveStatusMenu": ["Auto-approve: on", "자동 승인: 켜짐"],
     "autoApproveUnavailableMenu": ["Auto-approve needs an allowlisted app (CHATGPT2CODEX_CONTROL_ALLOWLIST)", "자동 승인을 사용하려면 허용 목록(CHATGPT2CODEX_CONTROL_ALLOWLIST) 앱이 필요합니다"],
+    "computerUseSetting": ["Allow bounded Computer Use from ChatGPT", "ChatGPT의 제한형 Computer Use 허용"],
+    "computerUseProject": ["Computer Use project", "Computer Use 프로젝트"],
+    "computerUseProjectHint": ["Required when the workspace folder is a container such as ~/codes. Choose the actual project folder containing a project marker.", "~/codes 같은 작업공간 컨테이너를 선택한 경우 필요합니다. 프로젝트 표시 파일이 있는 실제 프로젝트 폴더를 선택하세요."],
+    "computerUseApps": ["Allowed apps", "허용 앱"],
+    "computerUseAppsHint": ["Comma-separated app names. Password managers, Terminal, and other sensitive apps remain blocked.", "쉼표로 앱 이름을 구분합니다. 암호 관리자, 터미널 등 민감 앱은 계속 차단됩니다."],
+    "computerUseLimits": ["Grant limits", "권한 제한"],
+    "computerUseMinutesPlaceholder": ["minutes (1-60)", "분 (1-60)"],
+    "computerUseActionsPlaceholder": ["actions (1-100)", "동작 수 (1-100)"],
+    "computerUseGrantFailedTitle": ["Computer Use grant failed", "Computer Use 권한 발급 실패"],
+    "computerUseGrantOnMenu": ["Grant Computer Use now", "Computer Use 권한 지금 발급"],
+    "computerUseGrantOffMenu": ["Revoke Computer Use grant", "Computer Use 권한 회수"],
+    "computerUseGrantUnavailableMenu": ["Configure Computer Use, an allowed app, and a registered Computer Use project in Settings first.", "먼저 설정에서 Computer Use, 허용 앱, 등록된 Computer Use 프로젝트를 구성하세요."],
     "autoUpdatesMenu": ["Auto Check for Updates", "업데이트 자동 확인", "更新を自動確認", "自动检查更新", "自動檢查更新", "Buscar actualizaciones automáticamente", "Recherche auto des mises à jour", "Automatisch nach Updates suchen", "Verificar atualizações automaticamente", "Controlla aggiornamenti automaticamente", "Automatisch updates zoeken", "Automatycznie sprawdzaj aktualizacje", "Автопроверка обновлений", "Güncellemeleri otomatik denetle", "Tự động kiểm tra cập nhật", "Periksa pembaruan otomatis", "ตรวจอัปเดตอัตโนมัติ", "التحقق التلقائي من التحديثات", "अपडेट अपने-आप जांचें", "Автоматично перевіряти оновлення"],
     "openLocalHealth": ["Open Local Health", "로컬 상태 열기", "ローカルヘルスを開く", "打开本地健康检查", "開啟本機健康檢查", "Abrir estado local", "Ouvrir l'état local", "Lokalen Status öffnen", "Abrir saúde local", "Apri stato locale", "Lokale status openen", "Otwórz status lokalny", "Открыть локальный статус", "Yerel durumu aç", "Mở trạng thái cục bộ", "Buka kesehatan lokal", "เปิดสถานะภายใน", "فتح حالة الجهاز", "स्थानीय हेल्थ खोलें", "Відкрити локальний стан"],
     "openPublicHealth": ["Open Public Health", "공개 상태 열기", "公開ヘルスを開く", "打开公开健康检查", "開啟公開健康檢查", "Abrir estado público", "Ouvrir l'état public", "Öffentlichen Status öffnen", "Abrir saúde pública", "Apri stato pubblico", "Publieke status openen", "Otwórz status publiczny", "Открыть публичный статус", "Genel durumu aç", "Mở trạng thái công khai", "Buka kesehatan publik", "เปิดสถานะสาธารณะ", "فتح الحالة العامة", "सार्वजनिक हेल्थ खोलें", "Відкрити публічний стан"],
@@ -129,6 +141,8 @@ private let desktopLocalizationRows: [String: [String]] = [
     "settingsTitle": ["ChatGPT To Codex Settings", "ChatGPT To Codex 설정", "ChatGPT To Codex 設定", "ChatGPT To Codex 设置", "ChatGPT To Codex 設定", "Ajustes de ChatGPT To Codex", "Réglages de ChatGPT To Codex", "ChatGPT To Codex Einstellungen", "Configurações do ChatGPT To Codex", "Impostazioni ChatGPT To Codex", "ChatGPT To Codex instellingen", "Ustawienia ChatGPT To Codex", "Настройки ChatGPT To Codex", "ChatGPT To Codex ayarları", "Cài đặt ChatGPT To Codex", "Pengaturan ChatGPT To Codex", "การตั้งค่า ChatGPT To Codex", "إعدادات ChatGPT To Codex", "ChatGPT To Codex सेटिंग्स", "Налаштування ChatGPT To Codex"],
     "settingsInfo": ["ezBuilder local MCP runtime settings", "ezBuilder 로컬 MCP 런타임 설정", "ezBuilder ローカル MCP ランタイム設定", "ezBuilder 本地 MCP 运行时设置", "ezBuilder 本機 MCP 執行階段設定", "Ajustes del runtime MCP local de ezBuilder", "Réglages du runtime MCP local ezBuilder", "Lokale MCP-Laufzeit von ezBuilder", "Configurações do runtime MCP local ezBuilder", "Impostazioni runtime MCP locale ezBuilder", "Lokale MCP-runtime instellingen van ezBuilder", "Ustawienia lokalnego runtime MCP ezBuilder", "Настройки локального MCP ezBuilder", "ezBuilder yerel MCP çalışma zamanı ayarları", "Cài đặt runtime MCP cục bộ ezBuilder", "Pengaturan runtime MCP lokal ezBuilder", "การตั้งค่ารันไทม์ MCP ภายในของ ezBuilder", "إعدادات تشغيل MCP المحلي من ezBuilder", "ezBuilder स्थानीय MCP रनटाइम सेटिंग्स", "Налаштування локального MCP runtime ezBuilder"],
     "language": ["Language", "언어", "言語", "语言", "語言", "Idioma", "Langue", "Sprache", "Idioma", "Lingua", "Taal", "Język", "Язык", "Dil", "Ngôn ngữ", "Bahasa", "ภาษา", "اللغة", "भाषा", "Мова"],
+    "instanceName": ["MCP instance name", "MCP 인스턴스 이름"],
+    "instanceNameHint": ["Give this installation a unique name, such as Office Mac or Home PC. The name is included in health checks and tool results.", "이 설치본을 구분할 고유 이름을 입력하세요(예: 사무실 Mac, 집 PC). 상태 확인과 도구 결과에 이 이름이 표시됩니다."],
     "projectFolder": ["Project folder", "프로젝트 폴더", "プロジェクトフォルダ", "项目文件夹", "專案資料夾", "Carpeta del proyecto", "Dossier du projet", "Projektordner", "Pasta do projeto", "Cartella progetto", "Projectmap", "Folder projektu", "Папка проекта", "Proje klasörü", "Thư mục dự án", "Folder proyek", "โฟลเดอร์โปรเจกต์", "مجلد المشروع", "प्रोजेक्ट फ़ोल्डर", "Тека проєкту"],
     "browse": ["Browse...", "찾아보기...", "参照...", "浏览...", "瀏覽...", "Examinar...", "Parcourir...", "Durchsuchen...", "Procurar...", "Sfoglia...", "Bladeren...", "Przeglądaj...", "Обзор...", "Gözat...", "Duyệt...", "Telusuri...", "เรียกดู...", "استعراض...", "ब्राउज़...", "Огляд..."],
     "launchAtLoginSetting": ["Launch app at login", "로그인 시 앱 실행", "ログイン時にアプリを起動", "登录时启动应用", "登入時啟動 App", "Iniciar la app al acceder", "Lancer l'app à la connexion", "App beim Anmelden starten", "Abrir app ao iniciar sessão", "Avvia app al login", "App starten bij inloggen", "Uruchamiaj aplikację przy logowaniu", "Запускать приложение при входе", "Girişte uygulamayı başlat", "Mở ứng dụng khi đăng nhập", "Jalankan app saat login", "เปิดแอปเมื่อเข้าสู่ระบบ", "تشغيل التطبيق عند تسجيل الدخول", "लॉगिन पर ऐप शुरू करें", "Запускати застосунок під час входу"],
@@ -198,6 +212,8 @@ private final class ServiceController {
     private let environment = ProcessInfo.processInfo.environment
     private let defaults = UserDefaults.standard
     private let selectedProjectFolderKey = "selectedProjectFolder"
+    private let controlProjectFolderKey = "controlProjectFolder"
+    private let displayNameKey = "displayName"
     private let publicHostnameKey = "publicHostname"
     private let cloudflaredTunnelNameKey = "cloudflaredTunnelName"
     private let enablePublicTunnelKey = "enablePublicTunnel"
@@ -205,6 +221,10 @@ private final class ServiceController {
     private let launchAtLoginKey = "launchAtLogin"
     private let startMCPOnLaunchKey = "startMCPOnLaunch"
     private let autoCheckUpdatesKey = "autoCheckUpdates"
+    private let computerUseEnabledKey = "computerUseEnabled"
+    private let controlAllowlistKey = "controlAllowlist"
+    private let controlGrantMinutesKey = "controlGrantMinutes"
+    private let controlGrantMaxActionsKey = "controlGrantMaxActions"
     private(set) var process: Process?
 
     let appName = "ChatGPT To Codex"
@@ -216,6 +236,18 @@ private final class ServiceController {
         let short = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
         let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
         return short?.isEmpty == false ? short! : (build?.isEmpty == false ? build! : "0.0.0")
+    }
+
+    /// Human-readable name used to distinguish this installation from other
+    /// ChatGPT To Codex MCP registrations. The runtime persists the stable
+    /// instance id separately in device.json; this value is only the label.
+    var displayName: String {
+        let configured = environment["CHATGPT2CODEX_DISPLAY_NAME"]?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if configured?.isEmpty == false { return configured! }
+        let saved = defaults.string(forKey: displayNameKey)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if saved?.isEmpty == false { return saved! }
+        let host = ProcessInfo.processInfo.hostName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return host.isEmpty ? appName : "\(appName) (\(host))"
     }
 
     init() {
@@ -286,6 +318,24 @@ private final class ServiceController {
 
     var autoCheckUpdates: Bool {
         defaults.bool(forKey: autoCheckUpdatesKey)
+    }
+
+    var computerUseEnabled: Bool {
+        if let raw = environment["CHATGPT2CODEX_CONTROL_CHATGPT"] {
+            let normalized = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            return normalized == "1" || normalized == "true" || normalized == "yes" || normalized == "on"
+        }
+        return defaults.bool(forKey: computerUseEnabledKey)
+    }
+
+    var controlGrantMinutes: Int {
+        let saved = defaults.integer(forKey: controlGrantMinutesKey)
+        return min(60, max(1, saved > 0 ? saved : 10))
+    }
+
+    var controlGrantMaxActions: Int {
+        let saved = defaults.integer(forKey: controlGrantMaxActionsKey)
+        return min(100, max(1, saved > 0 ? saved : 20))
     }
 
     var githubRepoURL: URL {
@@ -480,14 +530,57 @@ private final class ServiceController {
     }
 
     /// The same `CHATGPT2CODEX_CONTROL_ALLOWLIST` the managed subprocess
-    /// sees (src/control/policy.ts controlAllowlist), read here only to
-    /// supply `--apps` for the status-bar auto-approve toggle below — this
-    /// never widens the scope beyond what the operator already allowlisted.
+    /// sees. An explicit process environment remains authoritative; normal
+    /// app launches use the allowlist saved in the status-bar settings.
     var controlAllowlistApps: [String] {
-        (environment["CHATGPT2CODEX_CONTROL_ALLOWLIST"] ?? "")
+        let configured = environment["CHATGPT2CODEX_CONTROL_ALLOWLIST"]
+        let saved = defaults.string(forKey: controlAllowlistKey)
+        return (configured ?? saved ?? "")
             .split(separator: ",")
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
+    }
+
+    /// Creates the local, expiring capability consumed by remote Computer
+    /// Use actions. The CLI resolves the selected project and re-validates
+    /// the allowlist and sensitive-app policy before writing the grant.
+    func issueComputerUseGrant() -> (ok: Bool, message: String) {
+        guard computerUseEnabled else { return (false, "Computer Use is disabled") }
+        guard let root = computerUseProjectRoot else {
+            return (false, "Choose a registered Computer Use project folder (with .git or a project marker) in Settings first")
+        }
+        let apps = controlAllowlistApps
+        guard !apps.isEmpty else { return (false, "Add at least one allowed app") }
+        do {
+            let result = try runCli([
+                "control", "grant", "on",
+                "--project-root", root,
+                "--apps", apps.joined(separator: ","),
+                "--minutes", "\(controlGrantMinutes)",
+                "--max", "\(controlGrantMaxActions)"
+            ])
+            return (result.status == 0, result.status == 0 ? result.stdout : result.stderr)
+        } catch {
+            return (false, error.localizedDescription)
+        }
+    }
+
+    @discardableResult
+    func revokeComputerUseGrant() -> Bool {
+        (try? runCli(["control", "grant", "off"]))?.status == 0
+    }
+
+    func computerUseGrantStatus() -> (enabled: Bool, remainingMs: Int, usedActions: Int, maxActions: Int) {
+        guard let result = try? runCli(["control", "grant", "status"]), result.status == 0,
+              let data = result.stdout.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              obj["controlGrantActive"] as? Bool == true
+        else {
+            return (false, 0, 0, 0)
+        }
+        let expiresAt = obj["expiresAt"] as? Double ?? 0
+        let remainingMs = max(0, Int(expiresAt - Date().timeIntervalSince1970 * 1000))
+        return (true, remainingMs, obj["usedActions"] as? Int ?? 0, obj["maxActions"] as? Int ?? 0)
     }
 
     /// `chatgpt2codex control auto status`.
@@ -532,6 +625,8 @@ private final class ServiceController {
 
         var environment = ProcessInfo.processInfo.environment
         environment["PATH"] = "\(runtimeRoot.appendingPathComponent("bin").path):\(NSHomeDirectory())/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:\(environment["PATH"] ?? "")"
+        environment["CHATGPT2CODEX_CONTROL_ALLOWLIST"] = controlAllowlistApps.joined(separator: ",")
+        environment["CHATGPT2CODEX_CONTROL_CHATGPT"] = computerUseEnabled ? "1" : "0"
         process.environment = environment
 
         let stdoutPipe = Pipe()
@@ -615,6 +710,24 @@ private final class ServiceController {
         return selectedProjectFolder.path
     }
 
+    /// Project root used for the local Computer Use grant. A workspace may be
+    /// a container (for example `~/codes`) with projects nested below it, so
+    /// this is deliberately separate from the workspace folder above.
+    var controlProjectFolder: URL? {
+        guard let value = defaults.string(forKey: controlProjectFolderKey), !value.isEmpty else {
+            return nil
+        }
+        return URL(fileURLWithPath: value)
+    }
+
+    var computerUseProjectRoot: String? {
+        let candidate = controlProjectFolder ?? selectedProjectFolder
+        guard let candidate, hasProjectMarker(candidate), isInsideWorkspace(candidate) else {
+            return nil
+        }
+        return candidate.path
+    }
+
     var projectDisplayName: String {
         selectedProjectFolder?.lastPathComponent ?? localized("defaultWorkspace")
     }
@@ -623,8 +736,26 @@ private final class ServiceController {
         defaults.set(url.path, forKey: selectedProjectFolderKey)
     }
 
+    func setControlProjectFolder(_ url: URL?) {
+        if let url {
+            defaults.set(url.path, forKey: controlProjectFolderKey)
+        } else {
+            defaults.removeObject(forKey: controlProjectFolderKey)
+        }
+    }
+
+    func setDisplayName(_ value: String) {
+        defaults.set(value.trimmingCharacters(in: .whitespacesAndNewlines), forKey: displayNameKey)
+    }
+
     func clearSelectedProjectFolder() {
         defaults.removeObject(forKey: selectedProjectFolderKey)
+    }
+
+    func isInsideWorkspace(_ url: URL) -> Bool {
+        let workspacePath = URL(fileURLWithPath: workspace).standardizedFileURL.path
+        let candidatePath = url.standardizedFileURL.path
+        return candidatePath == workspacePath || candidatePath.hasPrefix(workspacePath + "/")
     }
 
     func setPublicHostname(_ value: String) {
@@ -645,6 +776,13 @@ private final class ServiceController {
 
     func setAutoCheckUpdates(_ enabled: Bool) {
         defaults.set(enabled, forKey: autoCheckUpdatesKey)
+    }
+
+    func setComputerUse(enabled: Bool, apps: String, minutes: Int, maxActions: Int) {
+        defaults.set(enabled, forKey: computerUseEnabledKey)
+        defaults.set(apps.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }.joined(separator: ","), forKey: controlAllowlistKey)
+        defaults.set(min(60, max(1, minutes)), forKey: controlGrantMinutesKey)
+        defaults.set(min(100, max(1, maxActions)), forKey: controlGrantMaxActionsKey)
     }
 
     func setPreferredLanguage(_ value: String) {
@@ -782,6 +920,9 @@ private final class ServiceController {
         export PATH=\(shellQuote(runtimeRoot.appendingPathComponent("bin").path))":$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
         export WORKSPACE=\(shellQuote(workspace))
         export PORT=\(port)
+        export CHATGPT2CODEX_DISPLAY_NAME=\(shellQuote(displayName))
+        export CHATGPT2CODEX_CONTROL_ALLOWLIST=\(shellQuote(controlAllowlistApps.joined(separator: ",")))
+        \(computerUseEnabled ? "export CHATGPT2CODEX_CONTROL_CHATGPT=1" : "unset CHATGPT2CODEX_CONTROL_CHATGPT")
         \(enablePublicTunnel ? "export CHATGPT2CODEX_EXPOSE_WEB=1" : "unset CHATGPT2CODEX_EXPOSE_WEB")
         \(publicHost.map { "export PUBLIC_HOSTNAME=\(shellQuote($0))" } ?? "unset PUBLIC_HOSTNAME")
         \(cloudflaredTunnelName.map { "export CLOUDFLARED_TUNNEL_NAME=\(shellQuote($0))" } ?? "")
@@ -965,6 +1106,7 @@ private final class StatusBarAppDelegate: NSObject, NSApplicationDelegate, NSMen
     private var logWindow: NSWindow?
     private var doctorWindow: NSWindow?
     private weak var settingsLanguagePopup: NSPopUpButton?
+    private weak var settingsDisplayNameField: NSTextField?
     private weak var settingsProjectField: NSTextField?
     private weak var settingsLaunchAtLogin: NSButton?
     private weak var settingsStartOnLaunch: NSButton?
@@ -976,6 +1118,11 @@ private final class StatusBarAppDelegate: NSObject, NSApplicationDelegate, NSMen
     private var settingsOwnerTokenConfigured = false
     private weak var settingsHostField: NSTextField?
     private weak var settingsPortField: NSTextField?
+    private weak var settingsComputerUseEnabled: NSButton?
+    private weak var settingsControlProjectField: NSTextField?
+    private weak var settingsControlAppsField: NSTextField?
+    private weak var settingsControlMinutesField: NSTextField?
+    private weak var settingsControlMaxActionsField: NSTextField?
 
     private func t(_ key: String) -> String {
         controller.localized(key)
@@ -1252,6 +1399,24 @@ private final class StatusBarAppDelegate: NSObject, NSApplicationDelegate, NSMen
         guard menu === pendingControlSubmenu else { return }
         menu.removeAllItems()
 
+        let grantStatus = controller.computerUseGrantStatus()
+        let grantItem: NSMenuItem
+        if grantStatus.enabled {
+            let minutesLeft = max(1, grantStatus.remainingMs / 60000)
+            grantItem = NSMenuItem(
+                title: "\(t("computerUseGrantOffMenu")) (\(minutesLeft)m, \(grantStatus.usedActions)/\(grantStatus.maxActions))",
+                action: #selector(toggleComputerUseGrant),
+                keyEquivalent: ""
+            )
+        } else {
+            grantItem = NSMenuItem(title: t("computerUseGrantOnMenu"), action: #selector(toggleComputerUseGrant), keyEquivalent: "")
+        }
+        grantItem.target = self
+        grantItem.isEnabled = grantStatus.enabled || (controller.computerUseEnabled && controller.computerUseProjectRoot != nil && !controller.controlAllowlistApps.isEmpty)
+        if !grantItem.isEnabled { grantItem.toolTip = t("computerUseGrantUnavailableMenu") }
+        menu.addItem(grantItem)
+        menu.addItem(.separator())
+
         // Auto-approve toggle: local-human-only (runCli(["control", "auto",
         // ...]) — see ServiceController.enableAutoApprove/disableAutoApprove
         // above). Shown disabled when the current control allowlist is empty
@@ -1326,6 +1491,22 @@ private final class StatusBarAppDelegate: NSObject, NSApplicationDelegate, NSMen
 
     @objc private func approveAllPendingControlActions() {
         controller.approveAllControlActions()
+    }
+
+    @objc private func toggleComputerUseGrant() {
+        if controller.computerUseGrantStatus().enabled {
+            controller.revokeComputerUseGrant()
+            return
+        }
+        let grant = controller.issueComputerUseGrant()
+        if !grant.ok {
+            let alert = NSAlert()
+            alert.messageText = t("computerUseGrantFailedTitle")
+            alert.informativeText = grant.message
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: t("ok"))
+            alert.runModal()
+        }
     }
 
     /// Local-human-only auto-approve toggle: always shells out to
@@ -1405,7 +1586,7 @@ private final class StatusBarAppDelegate: NSObject, NSApplicationDelegate, NSMen
         settingsWindow?.close()
         let width: CGFloat = 540
         let hintWidth: CGFloat = 322
-        let publicHintY: CGFloat = 398
+        let publicHintY: CGFloat = 458
         let hintFont = NSFont.systemFont(ofSize: 10)
         func measuredHintHeight(_ text: String, width: CGFloat) -> CGFloat {
             let rect = (text as NSString).boundingRect(
@@ -1419,7 +1600,13 @@ private final class StatusBarAppDelegate: NSObject, NSApplicationDelegate, NSMen
         let publicHintHeight = measuredHintHeight(publicHintText, width: hintWidth)
         let localPortY = publicHintY + publicHintHeight + 18
         let portFieldY = localPortY - 4
-        let actionRow1Y = localPortY + 44
+        let computerUseY = localPortY + 42
+        let computerUseProjectY = computerUseY + 34
+        let computerUseProjectHintY = computerUseProjectY + 30
+        let computerUseAppsY = computerUseProjectHintY + 30
+        let computerUseHintY = computerUseAppsY + 30
+        let computerUseLimitsY = computerUseHintY + 34
+        let actionRow1Y = computerUseLimitsY + 44
         let actionRow2Y = actionRow1Y + 38
         let footerY = actionRow2Y + 54
         let footerButtonY = footerY - 6
@@ -1500,47 +1687,92 @@ private final class StatusBarAppDelegate: NSObject, NSApplicationDelegate, NSMen
         content.addSubview(projectField)
         content.addSubview(button(t("browse"), x: 428, y: 179, width: 84, action: #selector(browseProjectFolderFromSettings)))
 
+        content.addSubview(label(t("instanceName"), x: 28, y: 220, width: 170))
+        let displayNameField = field(controller.displayName, x: 190, y: 216, width: 322, placeholder: "Office Mac")
+        displayNameField.toolTip = t("instanceNameHint")
+        settingsDisplayNameField = displayNameField
+        content.addSubview(displayNameField)
+        content.addSubview(hint(t("instanceNameHint"), x: 190, y: 246, width: 322, height: 26))
+
         let launchAtLogin = NSButton(checkboxWithTitle: t("launchAtLoginSetting"), target: nil, action: nil)
-        launchAtLogin.frame = NSRect(x: 190, y: 220, width: 320, height: 22)
+        launchAtLogin.frame = NSRect(x: 190, y: 280, width: 320, height: 22)
         launchAtLogin.state = controller.launchAtLogin ? .on : .off
         settingsLaunchAtLogin = launchAtLogin
         content.addSubview(launchAtLogin)
         let startOnLaunch = NSButton(checkboxWithTitle: t("startOnOpenSetting"), target: nil, action: nil)
-        startOnLaunch.frame = NSRect(x: 190, y: 246, width: 320, height: 22)
+        startOnLaunch.frame = NSRect(x: 190, y: 306, width: 320, height: 22)
         startOnLaunch.state = controller.startMCPOnLaunch ? .on : .off
         settingsStartOnLaunch = startOnLaunch
         content.addSubview(startOnLaunch)
         let tokenConfigured = controller.ownerTokenConfigured()
         settingsOwnerTokenConfigured = tokenConfigured
-        content.addSubview(label(t("ownerToken"), x: 28, y: 272, width: 170))
-        let tokenStatus = label(tokenConfigured ? t("ownerTokenReady") : t("ownerTokenMissing"), x: 190, y: 272, width: 170)
+        content.addSubview(label(t("ownerToken"), x: 28, y: 332, width: 170))
+        let tokenStatus = label(tokenConfigured ? t("ownerTokenReady") : t("ownerTokenMissing"), x: 190, y: 332, width: 170)
         tokenStatus.textColor = tokenConfigured ? .systemGreen : .systemOrange
         settingsOwnerTokenStatus = tokenStatus
         content.addSubview(tokenStatus)
-        let tokenButton = button(t("ownerTokenGenerateCopy"), x: 190, y: 296, width: 210, action: #selector(generateAndCopyOwnerToken))
+        let tokenButton = button(t("ownerTokenGenerateCopy"), x: 190, y: 356, width: 210, action: #selector(generateAndCopyOwnerToken))
         settingsOwnerTokenButton = tokenButton
         content.addSubview(tokenButton)
-        let tokenCopyButton = button(t("ownerTokenCopy"), x: 410, y: 296, width: 102, action: #selector(copyStoredOwnerToken))
+        let tokenCopyButton = button(t("ownerTokenCopy"), x: 410, y: 356, width: 102, action: #selector(copyStoredOwnerToken))
         tokenCopyButton.isEnabled = loadOwnerTokenFromKeychain() != nil
         settingsOwnerTokenCopyButton = tokenCopyButton
         content.addSubview(tokenCopyButton)
 
         let publicTunnel = NSButton(checkboxWithTitle: t("publicTunnelSetting"), target: nil, action: nil)
-        publicTunnel.frame = NSRect(x: 190, y: 334, width: 322, height: 22)
+        publicTunnel.frame = NSRect(x: 190, y: 394, width: 322, height: 22)
         publicTunnel.state = controller.enablePublicTunnel ? .on : .off
         settingsPublicTunnel = publicTunnel
         content.addSubview(publicTunnel)
 
-        content.addSubview(label(t("publicHostname"), x: 28, y: 370, width: 170))
-        let hostField = field(controller.savedPublicHost ?? "", x: 190, y: 366, width: 230, placeholder: "chatgpt2codex.example.com")
+        content.addSubview(label(t("publicHostname"), x: 28, y: 430, width: 170))
+        let hostField = field(controller.savedPublicHost ?? "", x: 190, y: 426, width: 230, placeholder: "chatgpt2codex.example.com")
         settingsHostField = hostField
         content.addSubview(hostField)
-        content.addSubview(button(t("fixedDomainSetup"), x: 428, y: 365, width: 84, action: #selector(showFixedDomainSetup)))
+        content.addSubview(button(t("fixedDomainSetup"), x: 428, y: 425, width: 84, action: #selector(showFixedDomainSetup)))
         content.addSubview(hint(publicHintText, x: 190, y: publicHintY, width: hintWidth, height: publicHintHeight))
         content.addSubview(label(t("localPort"), x: 28, y: localPortY, width: 170))
         let portField = field("\(controller.port)", x: 190, y: portFieldY, width: 120)
         settingsPortField = portField
         content.addSubview(portField)
+
+        let computerUse = NSButton(checkboxWithTitle: t("computerUseSetting"), target: nil, action: nil)
+        computerUse.frame = NSRect(x: 190, y: computerUseY, width: 322, height: 22)
+        computerUse.state = controller.computerUseEnabled ? .on : .off
+        settingsComputerUseEnabled = computerUse
+        content.addSubview(computerUse)
+
+        content.addSubview(label(t("computerUseProject"), x: 28, y: computerUseProjectY + 4, width: 150))
+        let controlProjectField = field(
+            controller.controlProjectFolder?.path ?? "",
+            x: 190,
+            y: computerUseProjectY,
+            width: 230,
+            placeholder: controller.activeProjectRoot ?? "Select project folder"
+        )
+        controlProjectField.isEditable = false
+        controlProjectField.isSelectable = true
+        controlProjectField.focusRingType = .none
+        controlProjectField.toolTip = t("computerUseProjectHint")
+        settingsControlProjectField = controlProjectField
+        content.addSubview(controlProjectField)
+        content.addSubview(button(t("browse"), x: 428, y: computerUseProjectY - 1, width: 84, action: #selector(browseComputerUseProjectFromSettings)))
+        content.addSubview(hint(t("computerUseProjectHint"), x: 190, y: computerUseProjectHintY, width: 322, height: 26))
+
+        content.addSubview(label(t("computerUseApps"), x: 28, y: computerUseAppsY + 4, width: 150))
+        let controlAppsField = field(controller.controlAllowlistApps.joined(separator: ", "), x: 190, y: computerUseAppsY, width: 322, placeholder: "Safari, TextEdit")
+        settingsControlAppsField = controlAppsField
+        content.addSubview(controlAppsField)
+        content.addSubview(hint(t("computerUseAppsHint"), x: 190, y: computerUseHintY, width: 322, height: 30))
+        content.addSubview(label(t("computerUseLimits"), x: 28, y: computerUseLimitsY + 4, width: 150))
+        let minutesField = field("\(controller.controlGrantMinutes)", x: 190, y: computerUseLimitsY, width: 150, placeholder: t("computerUseMinutesPlaceholder"))
+        minutesField.toolTip = t("computerUseMinutesPlaceholder")
+        settingsControlMinutesField = minutesField
+        content.addSubview(minutesField)
+        let maxActionsField = field("\(controller.controlGrantMaxActions)", x: 362, y: computerUseLimitsY, width: 150, placeholder: t("computerUseActionsPlaceholder"))
+        maxActionsField.toolTip = t("computerUseActionsPlaceholder")
+        settingsControlMaxActionsField = maxActionsField
+        content.addSubview(maxActionsField)
 
         let actionColW: CGFloat = 235
         let actionCol2X: CGFloat = 277
@@ -1610,7 +1842,12 @@ private final class StatusBarAppDelegate: NSObject, NSApplicationDelegate, NSMen
               let startOnLaunch = settingsStartOnLaunch,
               let publicTunnel = settingsPublicTunnel,
               let hostField = settingsHostField,
-              let portField = settingsPortField
+              let portField = settingsPortField,
+              let computerUse = settingsComputerUseEnabled,
+              let controlProjectField = settingsControlProjectField,
+              let controlAppsField = settingsControlAppsField,
+              let controlMinutesField = settingsControlMinutesField,
+              let controlMaxActionsField = settingsControlMaxActionsField
         else { return }
         let projectPath = projectField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         if projectPath.isEmpty {
@@ -1627,12 +1864,48 @@ private final class StatusBarAppDelegate: NSObject, NSApplicationDelegate, NSMen
             }
             controller.setSelectedProjectFolder(projectURL)
         }
+        let controlProjectPath = controlProjectField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        if controlProjectPath.isEmpty {
+            controller.setControlProjectFolder(nil)
+        } else {
+            let controlProjectURL = URL(fileURLWithPath: controlProjectPath)
+            guard controller.ensureWorkspaceDirectory(controlProjectURL), controller.hasProjectMarker(controlProjectURL), controller.isInsideWorkspace(controlProjectURL) else {
+                let invalidProjectAlert = NSAlert()
+                invalidProjectAlert.messageText = t("projectMarkerTitle")
+                invalidProjectAlert.informativeText = t("computerUseProjectHint")
+                invalidProjectAlert.addButton(withTitle: t("ok"))
+                invalidProjectAlert.runModal()
+                return
+            }
+            controller.setControlProjectFolder(controlProjectURL)
+        }
         controller.setLaunchAtLogin(launchAtLogin.state == .on)
         controller.setStartMCPOnLaunch(startOnLaunch.state == .on)
         controller.setEnablePublicTunnel(publicTunnel.state == .on)
         controller.setPublicHostname(hostField.stringValue)
         if let port = Int(portField.stringValue), port > 0 {
             controller.setPort(port)
+        }
+        controller.setDisplayName(settingsDisplayNameField?.stringValue ?? controller.displayName)
+        let computerUseEnabled = computerUse.state == .on
+        controller.setComputerUse(
+            enabled: computerUseEnabled,
+            apps: controlAppsField.stringValue,
+            minutes: Int(controlMinutesField.stringValue) ?? 10,
+            maxActions: Int(controlMaxActionsField.stringValue) ?? 20
+        )
+        if computerUseEnabled {
+            let grant = controller.issueComputerUseGrant()
+            if !grant.ok {
+                let alert = NSAlert()
+                alert.messageText = t("computerUseGrantFailedTitle")
+                alert.informativeText = grant.message
+                alert.alertStyle = .warning
+                alert.addButton(withTitle: t("ok"))
+                alert.runModal()
+            }
+        } else {
+            controller.revokeComputerUseGrant()
         }
         let shouldRestart = latestHealth || controller.isManagedProcessRunning
         settingsWindow?.close()
@@ -1653,6 +1926,26 @@ private final class StatusBarAppDelegate: NSObject, NSApplicationDelegate, NSMen
             guard let self, response == .OK, let url = panel.url else { return }
             _ = self.controller.ensureWorkspaceDirectory(url)
             self.settingsProjectField?.stringValue = url.path
+        }
+        if let window = settingsWindow {
+            panel.beginSheetModal(for: window, completionHandler: applySelection)
+        } else {
+            panel.begin(completionHandler: applySelection)
+        }
+    }
+
+    @objc private func browseComputerUseProjectFromSettings() {
+        let panel = NSOpenPanel()
+        panel.title = t("computerUseProject")
+        panel.prompt = t("select")
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = controller.controlProjectFolder ?? controller.selectedProjectFolder ?? URL(fileURLWithPath: controller.workspace)
+        NSApp.activate(ignoringOtherApps: true)
+        let applySelection: (NSApplication.ModalResponse) -> Void = { [weak self] response in
+            guard let self, response == .OK, let url = panel.url else { return }
+            self.settingsControlProjectField?.stringValue = url.path
         }
         if let window = settingsWindow {
             panel.beginSheetModal(for: window, completionHandler: applySelection)

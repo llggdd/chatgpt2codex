@@ -10,11 +10,13 @@ import { requireBearerAuth } from "@modelcontextprotocol/sdk/server/auth/middlew
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { checkResourceAllowed, resourceUrlFromServerUrl } from "@modelcontextprotocol/sdk/shared/auth-utils.js";
-import type { ToolContext } from "../types.js";
+import type { Lease, ToolContext } from "../types.js";
 import { createServer as createMcpServer } from "./mcp-server.js";
+import { getTaskManager } from "../task/orchestrator.js";
 import { SingleUserOAuthProvider, type OAuthConfig } from "../auth/oauth-provider.js";
 import { verifyOwnerToken } from "../auth/owner-token.js";
 import { registerActionRoutes } from "./actions.js";
+import { actionBridgeName, fallbackDeviceIdentity, mcpResourceName, mcpServerName } from "../identity/device.js";
 
 /**
  * HTTP + OAuth 2.1 transport gateway (PRD §4 Transport Gateway, §5 CLI,
@@ -73,6 +75,10 @@ export function defaultHttpServerConfig(overrides: Partial<HttpServerConfig> = {
 interface TrackedSession {
   transport: StreamableHTTPServerTransport;
   lastActiveAtMs: number;
+  /** Key for the in-memory active-project/lease state owned by this client. */
+  sessionStateKey: string;
+  /** Identity captured at initialize time; never inferred from later input. */
+  boundInstanceId: string;
 }
 
 function sendJsonRpcError(res: Response, status: number, code: number, message: string): void {
@@ -81,6 +87,88 @@ function sendJsonRpcError(res: Response, status: number, code: number, message: 
 
 function hashAuditValue(value: string): string {
   return createHash("sha256").update(value).digest("base64url");
+}
+
+/**
+ * Compatibility handoff for clients that do not retain the MCP session id
+ * between calls. It is keyed by the authenticated OAuth client, expires with
+ * the lease, and is bounded so it cannot become a second persistent session
+ * store.
+ */
+interface RemoteLeaseHandoff {
+  lease: Lease;
+  storedAtMs: number;
+}
+
+const MAX_REMOTE_LEASE_HANDOFFS = 256;
+const REMOTE_LEASE_HANDOFF_TTL_MS = 30 * 60 * 1000;
+
+function leaseFromSessionState(state: unknown): Lease | null {
+  if (typeof state !== "object" || state === null) return null;
+  const record = state as { activeProjectId?: unknown; lease?: unknown; activeLease?: unknown };
+  const rawLease = record.lease ?? record.activeLease;
+  if (typeof record.activeProjectId !== "string" || typeof rawLease !== "object" || rawLease === null) return null;
+  const candidate = rawLease as Partial<Lease>;
+  if (
+    record.activeProjectId !== candidate.projectId ||
+    typeof candidate.projectId !== "string" ||
+    typeof candidate.leaseId !== "string" ||
+    typeof candidate.projectRoot !== "string" ||
+    typeof candidate.preset !== "string" ||
+    typeof candidate.issuedAt !== "number" ||
+    typeof candidate.expiresAt !== "number"
+  ) {
+    return null;
+  }
+  return { ...candidate } as Lease;
+}
+
+function pruneRemoteLeaseHandoffs(handoffs: Map<string, RemoteLeaseHandoff>, now = Date.now()): void {
+  for (const [key, handoff] of handoffs) {
+    if (now > handoff.lease.expiresAt || now - handoff.storedAtMs > REMOTE_LEASE_HANDOFF_TTL_MS) {
+      handoffs.delete(key);
+    }
+  }
+  while (handoffs.size > MAX_REMOTE_LEASE_HANDOFFS) {
+    const oldestKey = handoffs.keys().next().value;
+    if (typeof oldestKey !== "string") break;
+    handoffs.delete(oldestKey);
+  }
+}
+
+function publishRemoteLeaseHandoff(
+  handoffs: Map<string, RemoteLeaseHandoff>,
+  clientKey: string | undefined,
+  state: unknown,
+): void {
+  if (!clientKey) return;
+  const lease = leaseFromSessionState(state);
+  if (!lease || Date.now() > lease.expiresAt) {
+    // An explicit session reset must not leave an old lease available to a
+    // freshly recreated connection.
+    handoffs.delete(clientKey);
+    return;
+  }
+  handoffs.delete(clientKey);
+  handoffs.set(clientKey, { lease, storedAtMs: Date.now() });
+  pruneRemoteLeaseHandoffs(handoffs);
+}
+
+function lookupRemoteLeaseHandoff(
+  handoffs: Map<string, RemoteLeaseHandoff>,
+  clientKey: string | undefined,
+  projectId: string,
+): Lease | null {
+  if (!clientKey) return null;
+  pruneRemoteLeaseHandoffs(handoffs);
+  const handoff = handoffs.get(clientKey);
+  if (!handoff || handoff.lease.projectId !== projectId) return null;
+  return { ...handoff.lease };
+}
+
+function remoteLeaseClientKey(req: Request): string | undefined {
+  const clientId = req.auth?.clientId;
+  return typeof clientId === "string" && clientId.length > 0 ? hashAuditValue(clientId) : undefined;
 }
 
 const TRUSTED_CHATGPT_ORIGINS = ["https://chatgpt.com", "https://chat.openai.com"] as const;
@@ -168,6 +256,10 @@ export interface RunningHttpServer {
 }
 
 export function createHttpServer(ctx: ToolContext, config: HttpServerConfig): RunningHttpServer {
+  const identity = ctx.identity ?? fallbackDeviceIdentity();
+  // Keep all surfaces (MCP, Actions, and health) on the same identity even
+  // when an embedder constructs a context without the optional field.
+  const serverContext: ToolContext = ctx.identity ? ctx : { ...ctx, identity };
   const publicUrl = new URL(config.publicUrl);
   const mcpUrl = new URL("/mcp", publicUrl);
   const resourceServerUrl = resourceUrlFromServerUrl(mcpUrl);
@@ -240,7 +332,7 @@ export function createHttpServer(ctx: ToolContext, config: HttpServerConfig): Ru
       baseUrl: publicUrl,
       resourceServerUrl,
       scopesSupported: config.oauth.scopes,
-      resourceName: "chatgpt2codex",
+      resourceName: mcpResourceName(identity),
     }),
   );
 
@@ -256,7 +348,15 @@ export function createHttpServer(ctx: ToolContext, config: HttpServerConfig): Ru
   });
 
   app.get("/healthz", (_req, res) => {
-    res.json({ ok: true, name: "chatgpt2codex" });
+    res.json({
+      ok: true,
+      name: "chatgpt2codex",
+      serverName: mcpServerName(identity),
+      actionBridgeName: actionBridgeName(identity),
+      instanceId: identity.instanceId,
+      instanceName: identity.displayName,
+      platform: process.platform,
+    });
   });
 
   app.get("/privacy", (_req, res) => {
@@ -274,13 +374,15 @@ export function createHttpServer(ctx: ToolContext, config: HttpServerConfig): Ru
       );
   });
 
-  registerActionRoutes(app, ctx, publicUrl);
+  registerActionRoutes(app, serverContext, publicUrl);
 
   // Per-session transport map with TTL + hard cap (NFR-03/SR-09): every
   // initialize request creates one transport, keyed by MCP session id.
   // Idle sessions are swept on a timer; the map never grows unbounded even
   // under a client that never sends a clean close.
   const sessions = new Map<string, TrackedSession>();
+  const remoteSessionStates = new Map<string, { state: unknown }>();
+  const remoteLeaseHandoffs = new Map<string, RemoteLeaseHandoff>();
   let lastSessionActivityAtMs = Date.now();
   let idleShutdownQueued = false;
 
@@ -294,16 +396,20 @@ export function createHttpServer(ctx: ToolContext, config: HttpServerConfig): Ru
       }
     }
     if (oldestId) {
-      sessions.get(oldestId)?.transport.close();
+      const oldest = sessions.get(oldestId);
+      oldest?.transport.close();
+      if (oldest) remoteSessionStates.delete(oldest.sessionStateKey);
       sessions.delete(oldestId);
     }
   }
 
   const sweepInterval = setInterval(() => {
     const now = Date.now();
+    pruneRemoteLeaseHandoffs(remoteLeaseHandoffs, now);
     for (const [id, session] of sessions) {
       if (now - session.lastActiveAtMs > config.sessionTtlMs) {
         session.transport.close();
+        remoteSessionStates.delete(session.sessionStateKey);
         sessions.delete(id);
       }
     }
@@ -355,12 +461,31 @@ export function createHttpServer(ctx: ToolContext, config: HttpServerConfig): Ru
       } else if (initializeRequest) {
         if (sessions.size >= config.maxSessions) evictOldestSession();
 
+        // req.auth is populated by bearerAuth above. OAuth clientId is stable
+        // across token refreshes and lets a legacy client reconnect without
+        // making leases global to every remote caller.
+        const leaseHandoffClientKey = remoteLeaseClientKey(req);
+
+        // Keep active project + lease state per network connection. The
+        // persistent sessions.json remains the local CLI/Actions state, while
+        // simultaneous ChatGPT MCP clients no longer overwrite one another.
+        const sessionStateKey = randomUUID();
+        const remoteSessionState: { state: unknown } = {
+          state: { activeProjectId: null, mode: "observe", lease: null },
+        };
+        remoteSessionStates.set(sessionStateKey, remoteSessionState);
+
         transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
           onsessioninitialized: (newSessionId) => {
             if (transport) {
               lastSessionActivityAtMs = Date.now();
-              sessions.set(newSessionId, { transport, lastActiveAtMs: lastSessionActivityAtMs });
+              sessions.set(newSessionId, {
+                transport,
+                lastActiveAtMs: lastSessionActivityAtMs,
+                sessionStateKey,
+                boundInstanceId: identity.instanceId,
+              });
             }
           },
         });
@@ -368,6 +493,8 @@ export function createHttpServer(ctx: ToolContext, config: HttpServerConfig): Ru
         transport.onclose = () => {
           const closedSessionId = transport?.sessionId;
           if (closedSessionId) sessions.delete(closedSessionId);
+          void getTaskManager(serverContext.stateDir).cancelForSession(sessionStateKey).catch(() => undefined);
+          remoteSessionStates.delete(sessionStateKey);
         };
 
         // Mark this session remote: it's how ChatGPT (and any other network
@@ -375,8 +502,32 @@ export function createHttpServer(ctx: ToolContext, config: HttpServerConfig): Ru
         // refused here even when the desktop-control tools are exposed to
         // ChatGPT (see src/server/tools.ts project_select handler /
         // isControlChatGptExposed) — lease arming stays local-only (stdio).
-        const mcpServer = await createMcpServer({ ...ctx, remote: true });
-        await mcpServer.connect(transport);
+        try {
+          const mcpServer = await createMcpServer({
+            ...serverContext,
+            remote: true,
+            boundInstanceId: identity.instanceId,
+            // Use the per-connection state key as the audit/session scope. It
+            // is created before the protocol session is initialized, remains
+            // stable for the connection, and never exposes an internal token
+            // in the public API.
+            sessionId: sessionStateKey,
+            sessionStore: {
+              getSession: async () => remoteSessionState.state,
+              setSession: async (state) => {
+                remoteSessionState.state = state;
+                publishRemoteLeaseHandoff(remoteLeaseHandoffs, leaseHandoffClientKey, state);
+              },
+            },
+            remoteLeaseLookup: leaseHandoffClientKey
+              ? async (projectId) => lookupRemoteLeaseHandoff(remoteLeaseHandoffs, leaseHandoffClientKey, projectId)
+              : undefined,
+          });
+          await mcpServer.connect(transport);
+        } catch (error) {
+          remoteSessionStates.delete(sessionStateKey);
+          throw error;
+        }
       } else {
         sendJsonRpcError(res, 400, -32000, "No valid MCP session");
         return;
@@ -400,6 +551,8 @@ export function createHttpServer(ctx: ToolContext, config: HttpServerConfig): Ru
       clearInterval(sweepInterval);
       for (const session of sessions.values()) session.transport.close();
       sessions.clear();
+      remoteSessionStates.clear();
+      remoteLeaseHandoffs.clear();
       oauthProvider.close();
     },
   };

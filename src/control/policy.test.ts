@@ -24,6 +24,9 @@ describe("control/policy", () => {
     expect(isSensitiveApp("1Password 7")).toBe(true);
     expect(isSensitiveApp("System Settings")).toBe(true);
     expect(isSensitiveApp("Keychain Access")).toBe(true);
+    expect(isSensitiveApp("Terminal")).toBe(true);
+    expect(isSensitiveApp("iTerm2")).toBe(true);
+    expect(isSensitiveApp("Script Editor")).toBe(true);
     expect(isSensitiveApp("TextEdit")).toBe(false);
     expect(isSensitiveApp(undefined)).toBe(false);
   });

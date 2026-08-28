@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createServer } from "./mcp-server.js";
 import type { ToolContext } from "../types.js";
 
-const CONTROL_TOOL_NAMES = ["computer_screenshot", "computer_request_action", "computer_action_status", "computer_kill_switch"];
+const CONTROL_TOOL_NAMES = ["computer_screenshot", "computer_request_action", "computer_task_execute", "computer_action_status", "computer_kill_switch"];
 
 function makeCtx(): ToolContext {
   const stateDir = "/tmp/chatgpt2codex-tools-catalog-test";
@@ -187,6 +187,41 @@ describe("tool catalog", () => {
     expect(result.structuredContent?.desktopControlModel?.join(" ")).toContain("sensitive apps");
   });
 
+  it("exposes a device identity proof for multi-computer registrations", async () => {
+    const server = await createServer(makeCtx());
+    const tools = (
+      server as unknown as {
+        _registeredTools?: Record<string, { handler?: (input: unknown) => Promise<unknown> }>;
+      }
+    )._registeredTools;
+    const result = (await tools?.device_identity?.handler?.({})) as {
+      structuredContent?: Record<string, unknown> & {
+        chatgpt2codexToolCall?: Record<string, unknown>;
+      };
+    };
+    expect(result.structuredContent?.instanceId).toMatch(/^inst_[A-Za-z0-9-]{16,}$/u);
+    expect(result.structuredContent?.serverName).toMatch(/^chatgpt2codex-/u);
+    expect(result.structuredContent?.chatgpt2codexToolCall?.ok).toBe(true);
+  });
+
+  it("keeps device_identity visible in the MCP tools/list response", async () => {
+    const server = await createServer(makeCtx());
+    const handler = (
+      server.server as unknown as {
+        _requestHandlers?: Map<
+          string,
+          (request: { method: string; params: Record<string, never> }) => Promise<{
+            tools: Array<{ name: string; inputSchema?: { properties?: Record<string, unknown> } }>;
+          }>
+        >;
+      }
+    )._requestHandlers?.get("tools/list");
+    const listed = await handler?.({ method: "tools/list", params: {} });
+
+    expect(listed?.tools.map((tool) => tool.name)).toContain("device_identity");
+    expect(listed?.tools.find((tool) => tool.name === "project_select")?.inputSchema?.properties?.targetInstanceId).toBeDefined();
+  });
+
   describe("ChatGPT confirm-model exposure (CHATGPT2CODEX_CONTROL_CHATGPT)", () => {
     afterEach(() => {
       delete process.env.CHATGPT2CODEX_CONTROL_CHATGPT;
@@ -223,7 +258,7 @@ describe("tool catalog", () => {
       }
     });
 
-    it("exposes all 4 control tools in tools/list once CHATGPT2CODEX_CONTROL_CHATGPT=1, with oauth2 securitySchemes and Confirm/Deny-driving annotations", async () => {
+    it("exposes all 5 control tools in tools/list once CHATGPT2CODEX_CONTROL_CHATGPT=1, with oauth2 securitySchemes and Confirm/Deny-driving annotations", async () => {
       process.env.CHATGPT2CODEX_CONTROL_CHATGPT = "1";
       const server = await createServer(makeCtx());
       const handler = (

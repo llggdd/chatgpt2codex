@@ -1,3 +1,6 @@
+import type { DeviceIdentity } from "../identity/device.js";
+import { mcpServerName, shortInstanceId } from "../identity/device.js";
+
 export const CHATGPT2CODEX_APP_NAME = "ChatGPT To Codex";
 export const CHATGPT2CODEX_TOOL_NAMESPACE = "ChatGPT_To_Codex";
 
@@ -10,10 +13,18 @@ export const TOOL_AVAILABILITY_GATE = {
   wrongSurfaceExamples: ["image_gen", "python_user_visible", "browser-only answer"],
 } as const;
 
-export function toolCallProof(tool: string, ok: boolean): Record<string, unknown> {
+export function toolCallProof(tool: string, ok: boolean, identity?: DeviceIdentity): Record<string, unknown> {
   return {
     namespace: CHATGPT2CODEX_TOOL_NAMESPACE,
     app: CHATGPT2CODEX_APP_NAME,
+    ...(identity
+      ? {
+          instanceId: identity.instanceId,
+          instanceName: identity.displayName,
+          instanceSuffix: shortInstanceId(identity),
+          serverName: mcpServerName(identity),
+        }
+      : {}),
     tool,
     ok,
     currentTurnProof: true,
@@ -30,9 +41,10 @@ export function addToolCallProof<T extends Record<string, unknown>>(
   structured: T,
   tool: string,
   ok: boolean,
+  identity?: DeviceIdentity,
 ): T & { chatgpt2codexToolCall: Record<string, unknown> } {
   return {
-    chatgpt2codexToolCall: toolCallProof(tool, ok),
+    chatgpt2codexToolCall: toolCallProof(tool, ok, identity),
     ...structured,
   };
 }

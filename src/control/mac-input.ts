@@ -21,15 +21,26 @@ function execFileAsync(
   file: string,
   args: string[],
   extraEnv: Record<string, string> = {},
+  timeoutMs = 2_000,
 ): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
-    execFile(file, args, { env: { ...buildSafeChildEnv(), ...extraEnv }, windowsHide: true }, (error, stdout, stderr) => {
-      if (error) {
-        reject(error);
-        return;
-      }
-      resolve({ stdout: String(stdout ?? ""), stderr: String(stderr ?? "") });
-    });
+    execFile(
+      file,
+      args,
+      {
+        env: { ...buildSafeChildEnv(), ...extraEnv },
+        windowsHide: true,
+        timeout: timeoutMs,
+        killSignal: "SIGKILL",
+      },
+      (error, stdout, stderr) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve({ stdout: String(stdout ?? ""), stderr: String(stderr ?? "") });
+      },
+    );
   });
 }
 
@@ -108,7 +119,7 @@ export async function getAppWindowRegion(appName: string): Promise<AppWindowRegi
     end tell
     error "app window not found"
     `,
-  ]);
+  ], {}, 12_000);
   const parts = stdout.match(/-?\d+/g);
   if (!parts || parts.length < 4) {
     throw new Error(`invalid app window bounds: ${stdout.trim()}`);

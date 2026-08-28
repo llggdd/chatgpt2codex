@@ -15,10 +15,11 @@ import {
   type ToolContext,
   type ToolResult,
 } from "../types.js";
-import { scanWorkspace, findProject } from "../workspace/registry.js";
+import { DEFAULT_SCAN_DEPTH, scanWorkspace, findProject } from "../workspace/registry.js";
 import { makeLease } from "../workspace/project-select.js";
 import { requireProjectLease } from "../workspace/lease-guard.js";
 import { codeSearch } from "../code/search.js";
+import { clearProjectIndex } from "../code/index.js";
 import { readSlice } from "../code/read-slice.js";
 import { applyPatch, createFile } from "../code/patch.js";
 import { createCheckpoint, getWorkingDiff, listCheckpoints, readCheckpoint, restoreCheckpoint } from "../state/checkpoints.js";
@@ -28,8 +29,14 @@ import { fetchImageFromUrl } from "../assets/image-url.js";
 import { prepareChatGptImagesApp } from "../assets/chatgpt-images-app.js";
 import { listCommands, runCommand } from "../exec/command-runner.js";
 import { runLocalShell } from "../exec/local-shell.js";
+import { selectVerificationCommands } from "../exec/test-selection.js";
+import { parseDiagnostics } from "../exec/diagnostics.js";
+import { getTaskManager } from "../task/orchestrator.js";
+import type { TaskAccess, TaskKind, TaskRecord } from "../task/orchestrator.js";
+import { cacheKey, getResultCache } from "../state/result-cache.js";
 import { createE2eScreenshotShare } from "../e2e/screenshot-share.js";
 import { addToolCallProof, TOOL_AVAILABILITY_GATE } from "./tool-proof.js";
+import { fallbackDeviceIdentity, mcpServerName, mcpResourceName } from "../identity/device.js";
 import {
   captureE2eAppScreenshot,
   captureE2eAppScreenshotSet,
@@ -46,17 +53,21 @@ import { resolveInProject } from "../policy/paths.js";
 import { isSecretPath, redact } from "../policy/secrets.js";
 import { resolveActiveProject } from "../workspace/active.js";
 import { CONTROL_TOOL_NAMES, isControlChatGptExposed, isControlEnabled } from "../control/policy.js";
+import { assertTargetInstance, instanceIdForContext, isTargetInstanceTool, TARGET_INSTANCE_TOOL_NAMES } from "../instance-target.js";
 import { clearKill } from "../control/queue.js";
 import {
   handleComputerActionStatus,
+  handleComputerAccessStatus,
   handleComputerKillSwitch,
   handleComputerRequestAction,
   handleComputerScreenshot,
+  handleComputerTaskExecute,
 } from "../control/tools.js";
 import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import { createServer as createNetServer } from "node:net";
 import path from "node:path";
+import type { DeviceIdentity } from "../identity/device.js";
 
 // ---------------------------------------------------------------------------
 // Session helpers
@@ -76,7 +87,7 @@ function emptySession(): SessionState {
 }
 
 async function loadSession(ctx: ToolContext): Promise<SessionState> {
-  const raw = await ctx.store.getSession();
+  const raw = await (ctx.sessionStore?.getSession() ?? ctx.store.getSession());
   if (!raw || typeof raw !== "object") return emptySession();
   const s = raw as Partial<SessionState>;
   return {
@@ -87,7 +98,7 @@ async function loadSession(ctx: ToolContext): Promise<SessionState> {
 }
 
 async function saveSession(ctx: ToolContext, session: SessionState): Promise<void> {
-  await ctx.store.setSession(session);
+  await (ctx.sessionStore?.setSession(session) ?? ctx.store.setSession(session));
 }
 
 // ---------------------------------------------------------------------------
@@ -197,6 +208,26 @@ const CONTROL_ANNOTATIONS = {
 
 const CHATGPT_SAFETY_HIDDEN_TOOL_NAMES = new Set(["code_context_pack"]);
 
+const CACHEABLE_READ_TOOL_NAMES = new Set([
+  "device_identity",
+  "workspace_list_projects",
+  "workspace_get_project",
+  "project_status",
+  "project_rules",
+  "code_search",
+  "code_context_pack",
+  "command_list",
+  "repo_status",
+  "repo_diff_summary",
+  "checkpoint_list",
+  "checkpoint_show",
+  "list_images",
+  "project_bootstrap",
+]);
+
+const CACHE_INVALIDATING_TOOL_NAMES = new Set([...TARGET_INSTANCE_TOOL_NAMES]);
+const AUDIT_WRAPPED_CONTEXTS = new WeakSet<object>();
+
 const CHATGPT2CODEX_SECURITY_SCHEMES = [{ type: "oauth2", scopes: ["chatgpt2codex"] }] as const;
 const EMPTY_OBJECT_JSON_SCHEMA = {
   type: "object",
@@ -275,10 +306,14 @@ function installChatGptToolListHandler(s: McpServer): void {
  * wire shape expected by `registerTool` callbacks (plain object + index
  * signature, rather than our narrower interface type).
  */
-function toCallToolResult(toolName: string, result: ToolResult<Record<string, unknown>>): CallToolResultLike {
+function toCallToolResult(
+  toolName: string,
+  result: ToolResult<Record<string, unknown>>,
+  ctx?: ToolContext,
+): CallToolResultLike {
   return {
     content: result.content,
-    structuredContent: addToolCallProof(result.structuredContent, toolName, result.isError !== true),
+    structuredContent: addToolCallProof(result.structuredContent, toolName, result.isError !== true, ctx?.identity),
     ...(result.isError ? { isError: true } : {}),
     ...(result._meta ? { _meta: result._meta } : {}),
   };
@@ -290,15 +325,39 @@ async function withErrorMapping<T extends Record<string, unknown>>(
   input: unknown,
   fn: () => Promise<ToolResult<T>>,
 ): Promise<CallToolResultLike> {
+  const cache = getResultCache(ctx.stateDir);
+  const currentIdentity = ctx.identity ?? fallbackDeviceIdentity();
+  const cacheable = CACHEABLE_READ_TOOL_NAMES.has(toolName);
+  const cacheScope = `${currentIdentity.instanceId}:${ctx.sessionId ?? "local"}`;
+  const key = cacheable ? cacheKey(toolName, redactUnknown(input), cacheScope) : undefined;
   try {
+    assertTargetInstance(ctx, toolName, input);
+    if (key) {
+      const cached = cache.get<ToolResult<T>>(key);
+      if (cached) {
+        await ctx.ledger.append({
+          type: "tool.call.cache_hit",
+          tool: toolName,
+          input: redactUnknown(input),
+          instanceId: currentIdentity.instanceId,
+          sessionId: ctx.sessionId,
+        });
+        return toCallToolResult(toolName, cached, ctx);
+      }
+    }
     const result = await fn();
     await ctx.ledger.append({
       type: "tool.call.completed",
       tool: toolName,
       input: redactUnknown(input),
       isError: result.isError ?? false,
+      instanceId: currentIdentity.instanceId,
+      sessionId: ctx.sessionId,
+      taskId: ctx.taskId,
     });
-    return toCallToolResult(toolName, result);
+    if (result.isError !== true && key) cache.set(key, result);
+    else if (CACHE_INVALIDATING_TOOL_NAMES.has(toolName) && result.isError !== true) cache.clear();
+    return toCallToolResult(toolName, result, ctx);
   } catch (err) {
     const mapped = mapError(err);
     await ctx.ledger.append({
@@ -307,8 +366,32 @@ async function withErrorMapping<T extends Record<string, unknown>>(
       input: redactUnknown(input),
       code: mapped.structuredContent.code,
       error: mapped.structuredContent.error,
+      instanceId: currentIdentity.instanceId,
+      sessionId: ctx.sessionId,
+      taskId: ctx.taskId,
     });
-    return toCallToolResult(toolName, mapped);
+    return toCallToolResult(toolName, mapped, ctx);
+  }
+}
+
+function assertTaskOwnership(ctx: ToolContext, task: TaskRecord, operation: string): void {
+  if (!ctx.remote) return;
+  const expected = instanceIdForContext(ctx);
+  if (task.targetInstanceId !== expected) {
+    throw new DomainError(
+      ErrorCode.TARGET_INSTANCE_MISMATCH,
+      `Task ${task.taskId} belongs to another MCP instance`,
+      { taskId: task.taskId, requested: expected, actual: task.targetInstanceId, operation },
+    );
+  }
+  // MCP connections receive an internal session scope. Actions intentionally
+  // have no persistent session and therefore stop at the instance check.
+  if (ctx.sessionId && task.sessionId !== ctx.sessionId) {
+    throw new DomainError(
+      ErrorCode.PERMISSION_DENIED,
+      `Task ${task.taskId} belongs to another remote session`,
+      { taskId: task.taskId, operation },
+    );
   }
 }
 
@@ -722,6 +805,143 @@ async function writeGoalLoop(ctx: ToolContext, loopId: string, payload: Record<s
   await fs.writeFile(path.join(loopsDir, `${loopId}.loop.json`), `${JSON.stringify(payload, null, 2)}\n`, "utf8");
 }
 
+interface BackgroundTaskInput {
+  projectId: string;
+  kind: TaskKind;
+  access?: TaskAccess;
+  commandId?: string;
+  command?: string;
+  args?: string[];
+  cwd?: string;
+  timeoutSec?: number;
+  maxRetries?: number;
+  goal?: string;
+  intent?: {
+    writesWorkspace?: boolean;
+    needsNetwork?: boolean;
+    destructive?: boolean;
+    reason?: string;
+  };
+}
+
+interface QueuedBackgroundTask {
+  task: TaskRecord;
+  maxConcurrent: number;
+  requestedRetries: number;
+  effectiveRetries: number;
+}
+
+/**
+ * Shared queue entrypoint for task_start and task_execute. Keeping the
+ * policy/lease checks here prevents the single-goal interface from becoming
+ * a less guarded escape hatch than the lower-level task tool.
+ */
+async function queueBackgroundTask(
+  ctx: ToolContext,
+  identity: DeviceIdentity,
+  input: BackgroundTaskInput,
+): Promise<QueuedBackgroundTask> {
+  const goal = input.goal?.trim();
+  if (input.goal !== undefined && !goal) {
+    throw new DomainError(ErrorCode.COMMAND_NOT_ALLOWED, "A task goal must contain visible text");
+  }
+  const entry = await resolveOrThrow(ctx, { projectId: input.projectId });
+  const commands = input.kind === "command" ? await listCommands(entry.root) : [];
+  const discovered = input.commandId ? commands.find((command) => command.commandId === input.commandId) : undefined;
+  if (input.kind === "command" && !discovered) {
+    throw new DomainError(ErrorCode.ARBITRARY_SHELL_DENIED, `commandId "${input.commandId ?? ""}" is not allowlisted`, {
+      commandId: input.commandId,
+    });
+  }
+
+  let resolvedCommand = input.command;
+  if (input.kind === "e2e" && !resolvedCommand) {
+    resolvedCommand = (await discoverE2eAutomation(entry.root, input.cwd)).command;
+  }
+  if (input.kind !== "command" && !resolvedCommand) {
+    throw new DomainError(
+      input.kind === "e2e" ? ErrorCode.COMMAND_NOT_ALLOWED : ErrorCode.COMMAND_NOT_ALLOWED,
+      input.kind === "e2e" ? "No discovered E2E command is available for this project" : "A shell task requires command",
+    );
+  }
+
+  if (input.access === "read" && input.intent?.writesWorkspace) {
+    throw new DomainError(ErrorCode.COMMAND_NOT_ALLOWED, "A task that declares writesWorkspace=true cannot use access=read");
+  }
+  const inferredAccess: TaskAccess = input.access ?? (input.intent?.writesWorkspace ? "write" : "read");
+  const capability =
+    inferredAccess === "write"
+      ? "write"
+      : input.kind === "command" && discovered?.riskTier === "verify"
+        ? "verify"
+        : "read";
+  await requireProjectLease(ctx, input.projectId, capability);
+  if (input.intent?.needsNetwork || input.intent?.destructive) {
+    throw new DomainError(ErrorCode.APPROVAL_REQUIRED, "This background task requires explicit approval");
+  }
+
+  const requestedRetries =
+    typeof input.maxRetries === "number" && Number.isFinite(input.maxRetries)
+      ? Math.min(3, Math.max(0, Math.floor(input.maxRetries)))
+      : 0;
+  // Replaying an arbitrary shell/E2E command, or a write command, can repeat
+  // side effects. Automatic retries are therefore limited to discovered
+  // verify-tier commands executed under a read/tests lease.
+  const retryEligible = input.kind === "command" && inferredAccess === "read" && discovered?.riskTier === "verify";
+  const effectiveRetries = retryEligible ? requestedRetries : 0;
+  const manager = getTaskManager(ctx.stateDir);
+  const safeInputSummary: Record<string, unknown> = {
+    goalPreview: goal ? redact(goal).slice(0, 1000) : undefined,
+    kind: input.kind,
+    access: inferredAccess,
+    commandId: input.commandId,
+    command: resolvedCommand ? redact(resolvedCommand).slice(0, 500) : undefined,
+    cwd: input.cwd,
+    timeoutSec: input.timeoutSec,
+    retryLimit: effectiveRetries,
+    retryDisabled: requestedRetries > effectiveRetries,
+    reason: input.intent?.reason,
+  };
+  const task = await manager.start({
+    projectId: input.projectId,
+    kind: input.kind,
+    access: inferredAccess,
+    targetInstanceId: identity.instanceId,
+    sessionId: ctx.sessionId,
+    inputSummary: safeInputSummary,
+    run: async ({ signal, report }) => {
+      let attempt = 0;
+      while (true) {
+        attempt += 1;
+        await requireProjectLease(ctx, input.projectId, inferredAccess === "write" ? "write" : capability);
+        await report({ phase: "started", kind: input.kind, attempt, maxAttempts: effectiveRetries + 1 });
+        let result: Record<string, unknown>;
+        if (input.kind === "command") {
+          const commandResult = await runCommand(entry.root, input.commandId!, input.args, input.timeoutSec, { signal });
+          if (inferredAccess === "write") clearProjectIndex(entry.root);
+          result = {
+            ...commandResult,
+            stdoutSummary: redact(commandResult.stdoutSummary),
+            stderrSummary: redact(commandResult.stderrSummary),
+          };
+        } else {
+          if (!resolvedCommand) throw new DomainError(ErrorCode.COMMAND_NOT_ALLOWED, "No task command resolved");
+          const shellResult = await runLocalShell(entry.root, resolvedCommand, input.cwd, input.timeoutSec, { signal });
+          clearProjectIndex(entry.root);
+          result = shellResult;
+        }
+        const exitCode = typeof result.exitCode === "number" ? result.exitCode : 1;
+        if (exitCode === 0 || attempt > effectiveRetries) {
+          await report({ phase: "finished", exitCode, attempt, attempts: attempt, retryLimit: effectiveRetries });
+          return { ...result, attempts: attempt, retryLimit: effectiveRetries };
+        }
+        await report({ phase: "retrying", exitCode, attempt, nextAttempt: attempt + 1, retryLimit: effectiveRetries });
+      }
+    },
+  });
+  return { task, maxConcurrent: manager.maxConcurrent, requestedRetries, effectiveRetries };
+}
+
 /**
  * image-intake destinations default into `.chatgpt2codex/images/**`, which only
  * needs the `image` lease capability (same as save_image). Writing anywhere
@@ -770,20 +990,56 @@ async function guardSecretPath(ctx: ToolContext, absPath: string, toolName: stri
  */
 export function registerTools(server: unknown, ctx: ToolContext): void {
   const s = server as McpServer;
+  const identity = ctx.identity ?? fallbackDeviceIdentity();
+  // Add correlation fields to every event emitted by a tool handler, not just
+  // the outer tool.call event. This keeps fs/process/e2e/task audit records
+  // attributable when several MCP sessions or machines share one ledger.
+  if (!AUDIT_WRAPPED_CONTEXTS.has(ctx)) {
+    const baseLedger = ctx.ledger;
+    ctx.ledger = {
+      append: async (event) =>
+        baseLedger.append({
+          ...event,
+          instanceId: event.instanceId ?? identity.instanceId,
+          ...(event.sessionId === undefined && ctx.sessionId ? { sessionId: ctx.sessionId } : {}),
+          ...(event.taskId === undefined && ctx.taskId ? { taskId: ctx.taskId } : {}),
+        }),
+    };
+    AUDIT_WRAPPED_CONTEXTS.add(ctx);
+  }
   const rawRegisterTool = s.registerTool.bind(s);
-  const registerTool = ((name: string, config: Record<string, unknown>, handler: unknown) =>
-    rawRegisterTool(
+  const registerTool = ((name: string, config: Record<string, unknown>, handler: unknown) => {
+    const configuredSchema = config.inputSchema;
+    const augmentedSchema =
+      TARGET_INSTANCE_TOOL_NAMES.has(name) &&
+      configuredSchema &&
+      typeof configuredSchema === "object" &&
+      !Array.isArray(configuredSchema) &&
+      !("safeParse" in (configuredSchema as Record<string, unknown>))
+        ? {
+            ...(configuredSchema as Record<string, unknown>),
+            targetInstanceId: z
+              .string()
+              .optional()
+              .describe(
+                "Recommended for remote calls; copy the exact instanceId returned by device_identity. Bound MCP connections may omit it for legacy-client compatibility.",
+              ),
+          }
+        : configuredSchema;
+    return rawRegisterTool(
       name,
       {
         securitySchemes: CHATGPT2CODEX_SECURITY_SCHEMES,
         ...config,
+        ...(augmentedSchema ? { inputSchema: augmentedSchema } : {}),
         _meta: {
           securitySchemes: CHATGPT2CODEX_SECURITY_SCHEMES,
           ...((config._meta as Record<string, unknown> | undefined) ?? {}),
         },
       } as never,
       handler as never,
-    )) as unknown as McpServer["registerTool"];
+    );
+  }) as unknown as McpServer["registerTool"];
 
   const widgetMeta = e2eWidgetResourceMeta(ctx.config.publicUrl);
   s.registerResource(
@@ -812,6 +1068,32 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
   // -------------------------------------------------------------------
 
   registerTool(
+    "device_identity",
+    {
+      title: "Identify this ChatGPT To Codex instance",
+      description:
+        "Returns the stable identity of the local ChatGPT To Codex runtime. Use this first when more than one computer or MCP registration is connected, so the model can confirm which installation it is about to operate.",
+      annotations: READ_ONLY_ANNOTATIONS,
+      _meta: chatGptToolMeta("Checking connected instance...", "Connected instance identified"),
+      inputSchema: {},
+    },
+    async (input) =>
+      withErrorMapping(ctx, "device_identity", input, async () =>
+        makeResult(
+          {
+            instanceId: identity.instanceId,
+            instanceName: identity.displayName,
+            serverName: mcpServerName(identity),
+            resourceName: mcpResourceName(identity),
+            platform: process.platform,
+            workspaceRoot: ctx.workspaceRoot,
+          },
+          `${identity.displayName} (${mcpServerName(identity)}) is connected.`,
+        ),
+      ),
+  );
+
+  registerTool(
     "agent_guide",
     {
       title: "Get chatgpt2codex agent guide",
@@ -825,6 +1107,12 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
       return withErrorMapping(ctx, "agent_guide", input, async () =>
         makeResult(
           {
+            deviceIdentity: {
+              instanceId: identity.instanceId,
+              instanceName: identity.displayName,
+              serverName: mcpServerName(identity),
+              resourceName: mcpResourceName(identity),
+            },
             toolAvailabilityGate: TOOL_AVAILABILITY_GATE,
             codexGradeLoop: [
               "Discover: project_status, project_rules, repo_diff_summary, and narrow code_search before choosing a change.",
@@ -834,10 +1122,10 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
               "Report: include changed files, verification command/output, proof artifact, and remaining risk without claiming unstaged work is committed.",
             ],
             toolSurfaceMap: {
-              discover: ["workspace_list_projects", "workspace_refresh_index", "workspace_get_project", "project_select"],
+              discover: ["device_identity", "workspace_list_projects", "workspace_refresh_index", "workspace_get_project", "project_select", "project_bootstrap", "computer_access_status"],
               inspect: ["project_rules", "project_status", "repo_status", "repo_diff_summary", "code_search", "file_read_slice"],
-              modify: ["file_apply_patch", "file_create", "local_shell_run"],
-              verify: ["command_list", "local_shell_run", "e2e_test_and_show_screenshot", "e2e_start_server", "e2e_run_command", "e2e_screenshot"],
+              modify: ["file_apply_patch", "file_create", "change_and_verify", "local_shell_run"],
+              verify: ["command_list", "local_shell_run", "change_and_verify", "task_execute", "task_start", "task_status", "task_result", "e2e_test_and_show_screenshot", "e2e_start_server", "e2e_run_command", "e2e_screenshot"],
               release: ["git_diff_summary", "git_commit", "git_push", "checkpoint_list"],
               media: ["gpt_image_2_workflow", "save_chatgpt_image_from_url", "save_image_from_url", "save_image_from_clipboard", "save_image_from_download", "save_image_from_path"],
             },
@@ -850,6 +1138,7 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
             ],
             desktopControlModel: [
               "Off by default; expose control tools to ChatGPT only when the owner opts in through CHATGPT2CODEX_CONTROL_CHATGPT.",
+              "Call computer_access_status first when Computer Use reports a missing project permission; it shows the active project, local grant, instance binding, allowlist, and the next safe step.",
               "Arm explicitly with project_select preset=control; keep kill switch available in the same owner-controlled surface.",
               "Capture evidence with app/window screenshots, not the user's active ChatGPT browser tab as the app under test.",
               "Block sensitive apps and re-check frontmost target immediately before synthetic input.",
@@ -860,6 +1149,8 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
               "If ChatGPT's app selector changed to Image Generation/ImageGen, finish generation there, then reselect ChatGPT To Codex or use the Custom GPT Action bridge before doing source work.",
               "For /goal, deep research, or broad implementation prompts: call goal_loop or goal_intake immediately, then continue with project selection and inspection. Do not spend a long thinking turn before the first tool call.",
               "For Codex-style persistence: use goal_loop, perform one small inspect/edit/verify batch, then call goal_loop again with lastResult. Repeat until done or truly blocked.",
+              "For parallel work: use task_execute when you have a goal plus an explicit execution spec, or task_start for a low-level guarded command/shell/E2E job; then poll task_status/task_result. Read jobs may share a project, writes are serialized per project.",
+              "When multiple computers or MCP registrations are connected, call device_identity first and verify instanceName/serverName before selecting a project or editing. Send its exact instanceId as targetInstanceId on remote side effects when the client exposes the field; a bound endpoint infers its own id for legacy clients, while a different explicit target is rejected before local state changes.",
               "workspace_list_projects or workspace_refresh_index",
               "project_select with preset=full-write for edits",
               "project_rules, project_status, code_search",
@@ -878,6 +1169,8 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
             ],
             capabilities: {
               workspaceRoot: ctx.workspaceRoot,
+              concurrency:
+              "Each remote MCP connection keeps an isolated active project, lease, loop, and task visibility. Legacy clients that recreate the connection can use the short-lived lease handoff by passing the explicit projectId returned by project_select. Background tasks add a bounded concurrency pool and per-project read/write locks; use task_status/task_result for progress and include targetInstanceId on mutations.",
               fileEdits: "project-confined patch/create with secret-path blocking",
               shell: "project-confined local shell with redacted output and secret/OS-destructive guards",
               e2e:
@@ -913,7 +1206,7 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
                 "Never claim the image was saved until the chatgpt2codex action result returns a saved path.",
               ],
               customGptActionScope: [
-                "Actions surface: agent guide, project selection, workspace/project status, code search, narrow file read/apply/create, guarded command/local shell, repo diff/status, checkpoints, git commit/push, image import/list.",
+                "Actions surface: agent guide, project selection/bootstrap, workspace/project status, code search, narrow file read/apply/create, change-and-verify, background task queue, guarded command/local shell, repo diff/status, checkpoints, git commit/push, image import/list.",
                 "Generic fallback: call_tool can call any registered chatgpt2codex MCP tool by name when a dedicated action route is missing.",
               ],
             },
@@ -929,7 +1222,7 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
     {
       title: "Start a broad coding goal",
       description:
-        "Call this immediately when the user gives a /goal, deep research, vague large task, or says to proceed quickly. It records the goal and returns the next concrete tool calls within seconds, avoiding ChatGPT's ~30s silent action timeout.",
+        "Call this immediately when the user gives a /goal, deep research, vague large task, or says to proceed quickly. It records the goal and returns the next concrete tool calls within seconds, avoiding ChatGPT's ~30s silent action timeout. Remote calls must include targetInstanceId from device_identity.",
       annotations: LOCAL_STATE_ANNOTATIONS,
       _meta: chatGptToolMeta("Starting local goal...", "Local goal started"),
       inputSchema: {
@@ -946,6 +1239,8 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
           goalId: goalIdFor(goal),
           goalPreview: redact(goal).slice(0, 1000),
           projectId: input.projectId,
+          instanceId: identity.instanceId,
+          sessionId: ctx.sessionId,
           mode: input.mode ?? "implement",
           urgency: input.urgency ?? "normal",
           createdAt: new Date().toISOString(),
@@ -981,7 +1276,7 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
     {
       title: "Run local coding loop",
       description:
-        "Use for Codex-style autonomous coding through ChatGPT when Codex quota is unavailable. It records/continues a local loop and returns the next concrete inspect/edit/verify batch quickly. Call it again with lastResult after each batch until done or blocked.",
+        "Use for Codex-style autonomous coding through ChatGPT when Codex quota is unavailable. It records/continues a local loop and returns the next concrete inspect/edit/verify batch quickly. Call it again with lastResult after each batch until done or blocked. Remote calls must include targetInstanceId from device_identity; loop state is isolated per remote session.",
       annotations: LOCAL_STATE_ANNOTATIONS,
       _meta: chatGptToolMeta("Continuing local coding loop...", "Local coding loop ready"),
       inputSchema: {
@@ -1002,20 +1297,45 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
         let previousTurns = 0;
         let existingTurns: unknown[] = [];
         try {
-          const existing = JSON.parse(await fs.readFile(loopFile, "utf8")) as { turns?: unknown[] };
+          const existing = JSON.parse(await fs.readFile(loopFile, "utf8")) as {
+            turns?: unknown[];
+            instanceId?: unknown;
+            sessionId?: unknown;
+          };
+          if (
+            ctx.remote &&
+            (existing.instanceId !== instanceIdForContext(ctx) || existing.sessionId !== ctx.sessionId)
+          ) {
+            throw new DomainError(
+              ErrorCode.PERMISSION_DENIED,
+              `Goal loop ${loopId} belongs to another remote session`,
+              { loopId },
+            );
+          }
           existingTurns = Array.isArray(existing.turns) ? existing.turns : [];
           previousTurns = existingTurns.length;
-        } catch {
+        } catch (error) {
+          if (error instanceof DomainError) throw error;
           existingTurns = [];
           previousTurns = 0;
         }
         const turn = previousTurns + 1;
         const remainingTurns = Math.max(0, maxTurns - turn);
+        const safeLastResult = input.lastResult ? redact(input.lastResult).slice(0, 1_000) : undefined;
+        const lastResultHash = safeLastResult
+          ? createHash("sha256").update(safeLastResult).digest("hex").slice(0, 16)
+          : undefined;
+        const previousHashes = existingTurns
+          .map((item) => (item && typeof item === "object" ? (item as { lastResultHash?: unknown }).lastResultHash : undefined))
+          .filter((hash): hash is string => typeof hash === "string");
+        const sameFailureDetected = Boolean(lastResultHash && previousHashes.slice(-2).includes(lastResultHash));
         const nextActions = input.projectId
           ? [
               `Call project_select with projectId=${input.projectId}, preset=full-write, reason=loop ${loopId} turn ${turn}.`,
               "Call project_rules and project_status if they are not already fresh in this chat.",
-              "Read the smallest relevant context slice, apply one coherent patch/create batch, then run the closest verification command.",
+              sameFailureDetected
+                ? "The previous result repeated. Stop retrying the same command; inspect the failing file/log and choose a different narrow fix or report a real blocker."
+                : "Read the smallest relevant context slice, apply one coherent patch/create batch, then run the closest verification command.",
               `Call goal_loop again with loopId=${loopId}, projectId=${input.projectId}, maxTurns=${maxTurns}, and lastResult summarizing the batch.`,
             ]
           : [
@@ -1028,6 +1348,8 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
           "Stop only when the requested work is implemented and verified, a real blocker is proven, or a security/approval gate is hit.";
         const payload = {
           loopId,
+          instanceId: identity.instanceId,
+          sessionId: ctx.sessionId,
           goalPreview: input.goal ? redact(input.goal).slice(0, 1000) : undefined,
           projectId: input.projectId,
           mode: input.mode ?? "implement",
@@ -1037,7 +1359,9 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
             {
               turn,
               at: new Date().toISOString(),
-              lastResult: input.lastResult ? redact(input.lastResult).slice(0, 1000) : undefined,
+              lastResult: safeLastResult,
+              lastResultHash,
+              sameFailureDetected,
               nextActions,
             },
           ],
@@ -1049,6 +1373,8 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
             turn,
             remainingTurns,
             continueRequired: remainingTurns > 0,
+            sameFailureDetected,
+            failureFingerprint: lastResultHash,
             nextActions,
             loopRules: [
               "Do one small inspect/edit/verify batch per action round.",
@@ -1061,6 +1387,255 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
         );
       });
     },
+  );
+
+  // -------------------------------------------------------------------
+  // 8.2a Background task orchestration
+  // -------------------------------------------------------------------
+
+  registerTool(
+    "task_start",
+    {
+      title: "Start a background task",
+      description:
+        "Queue a guarded command, shell, or E2E task. Tasks run in the background with a bounded concurrency pool and per-project read/write locks; use task_status/task_result to follow progress. Remote calls must include targetInstanceId from device_identity.",
+      annotations: COMMAND_RUN_ANNOTATIONS,
+      _meta: chatGptToolMeta("Queueing background task...", "Background task queued"),
+      inputSchema: {
+        projectId: z.string(),
+        kind: z.enum(["command", "shell", "e2e"]),
+        access: z.enum(["read", "write"]).optional(),
+        commandId: z.string().optional(),
+        command: z.string().optional(),
+        args: z.array(z.string()).optional(),
+        cwd: z.string().optional(),
+        timeoutSec: z.number().int().positive().max(900).optional(),
+        maxRetries: z.number().int().min(0).max(3).optional(),
+        intent: z
+          .object({
+            writesWorkspace: z.boolean().optional(),
+            needsNetwork: z.boolean().optional(),
+            destructive: z.boolean().optional(),
+            reason: z.string().optional(),
+          })
+          .optional(),
+      },
+    },
+    async (input) => {
+      return withErrorMapping(ctx, "task_start", input, async () => {
+        const queued = await queueBackgroundTask(ctx, identity, input);
+        const { task } = queued;
+        await ctx.ledger.append({
+          type: "task.created",
+          taskId: task.taskId,
+          projectId: task.projectId,
+          kind: task.kind,
+          access: task.access,
+          instanceId: identity.instanceId,
+          sessionId: ctx.sessionId,
+        });
+        return makeResult(
+          {
+            task,
+            maxConcurrent: queued.maxConcurrent,
+            retryLimit: queued.effectiveRetries,
+            retryDisabled: queued.requestedRetries > queued.effectiveRetries,
+          },
+          `Task ${task.taskId} queued (${task.kind}, ${task.access}).`,
+        );
+      });
+    },
+  );
+
+  registerTool(
+    "task_execute",
+    {
+      title: "Execute a goal as a background task",
+      description:
+        "Use one goal entrypoint for local work. With an explicit guarded command/shell/E2E spec it queues a task and returns a taskId; with only a goal it persists a safe execution plan and returns the next required selection/specification steps without guessing a command. Remote calls must include targetInstanceId from device_identity.",
+      annotations: COMMAND_RUN_ANNOTATIONS,
+      _meta: chatGptToolMeta("Queueing goal execution...", "Goal execution queued"),
+      inputSchema: {
+        goal: z.string().min(1),
+        projectId: z.string().optional(),
+        kind: z.enum(["command", "shell", "e2e"]).optional(),
+        access: z.enum(["read", "write"]).optional(),
+        commandId: z.string().optional(),
+        command: z.string().optional(),
+        args: z.array(z.string()).optional(),
+        cwd: z.string().optional(),
+        timeoutSec: z.number().int().positive().max(900).optional(),
+        maxRetries: z.number().int().min(0).max(3).optional(),
+        intent: z
+          .object({
+            writesWorkspace: z.boolean().optional(),
+            needsNetwork: z.boolean().optional(),
+            destructive: z.boolean().optional(),
+            reason: z.string().optional(),
+          })
+          .optional(),
+      },
+    },
+    async (input) =>
+      withErrorMapping<Record<string, unknown>>(
+        ctx,
+        "task_execute",
+        { ...input, goal: "[goal redacted]" },
+        async () => {
+          const goal = input.goal.trim();
+          const hasExecutionSpec =
+            Boolean(input.projectId && input.kind) &&
+            (input.kind === "e2e" || (input.kind === "command" ? Boolean(input.commandId) : Boolean(input.command)));
+          if (!hasExecutionSpec) {
+            const goalId = await writeGoalIntake(ctx, {
+              goalId: goalIdFor(goal),
+              goalPreview: redact(goal).slice(0, 1000),
+              projectId: input.projectId,
+              mode: "execute",
+              executionState: "awaiting-explicit-spec",
+              createdAt: new Date().toISOString(),
+            });
+            const nextActions = input.projectId
+              ? [
+                  `Call project_select with projectId=${input.projectId}, preset=full-write, reason=task ${goalId}.`,
+                  "Call project_bootstrap for compact rules/status/commands context.",
+                  "Call task_execute again with this goal, kind, and an explicit allowlisted commandId (or guarded shell/E2E command).",
+                ]
+              : [
+                  "Call workspace_list_projects and select the intended project.",
+                  "Call project_bootstrap for compact rules/status/commands context.",
+                  "Call task_execute again with this goal, projectId, kind, and an explicit guarded execution spec.",
+                ];
+            await ctx.ledger.append({
+              type: "task.execute.planned",
+              goalId,
+              projectId: input.projectId,
+              goalPreview: redact(goal).slice(0, 1000),
+              instanceId: identity.instanceId,
+              sessionId: ctx.sessionId,
+            });
+            return makeResult(
+              { goalId, executionQueued: false, executionState: "awaiting-explicit-spec", nextActions },
+              `Goal ${goalId} recorded. Provide the selected project and an explicit guarded execution spec to queue it safely.`,
+            );
+          }
+          const queued = await queueBackgroundTask(ctx, identity, input as BackgroundTaskInput);
+          const { task } = queued;
+          await ctx.ledger.append({
+            type: "task.execute.created",
+            taskId: task.taskId,
+            projectId: task.projectId,
+            kind: task.kind,
+            access: task.access,
+            goalPreview: task.inputSummary?.goalPreview,
+            instanceId: identity.instanceId,
+            sessionId: ctx.sessionId,
+          });
+          return makeResult(
+            {
+              task,
+              maxConcurrent: queued.maxConcurrent,
+              retryLimit: queued.effectiveRetries,
+              retryDisabled: queued.requestedRetries > queued.effectiveRetries,
+              nextActions: [
+                `Poll task_status/task_result with taskId=${task.taskId}.`,
+                "If verification fails, inspect the returned diagnostics before applying a new narrow change.",
+              ],
+            },
+            `Goal queued as task ${task.taskId}. Poll task_status/task_result for progress and evidence.`,
+          );
+        },
+      ),
+  );
+
+  registerTool(
+    "task_status",
+    {
+      title: "Get background task status",
+      description: "Read one task or a recent task list without blocking for completion.",
+      annotations: READ_ONLY_ANNOTATIONS,
+      _meta: chatGptToolMeta("Checking task status...", "Task status loaded"),
+      inputSchema: {
+        taskId: z.string().optional(),
+        projectId: z.string().optional(),
+        status: z.enum(["queued", "running", "succeeded", "failed", "canceled"]).optional(),
+        limit: z.number().int().positive().max(100).optional(),
+      },
+    },
+    async (input) =>
+      withErrorMapping<Record<string, unknown>>(ctx, "task_status", input, async () => {
+        const manager = getTaskManager(ctx.stateDir);
+        if (input.taskId) {
+          const task = await manager.get(input.taskId);
+          assertTaskOwnership(ctx, task, "task_status");
+          return makeResult({ task, maxConcurrent: manager.maxConcurrent }, `Task ${task.taskId}: ${task.status}.`);
+        }
+        const allTasks = await manager.list({
+          projectId: input.projectId,
+          status: input.status,
+          // Filter ownership before applying the caller's limit; otherwise
+          // another remote session's newest tasks could hide this session's
+          // own work from a bounded list response.
+          limit: ctx.remote ? 100 : input.limit,
+        });
+        const tasks = ctx.remote
+          ? allTasks.filter((task) => {
+              try {
+                assertTaskOwnership(ctx, task, "task_status");
+                return true;
+              } catch {
+                return false;
+              }
+            })
+          : allTasks;
+        const limitedTasks = tasks.slice(0, Math.min(100, Math.max(1, Math.floor(input.limit ?? 20))));
+        return makeResult({ tasks: limitedTasks, maxConcurrent: manager.maxConcurrent }, `${limitedTasks.length} background task(s).`);
+      }),
+  );
+
+  registerTool(
+    "task_cancel",
+    {
+      title: "Cancel a background task",
+      description: "Request cancellation of a queued or running background task owned by this instance/session. Remote calls must include targetInstanceId from device_identity.",
+      annotations: LOCAL_STATE_ANNOTATIONS,
+      _meta: chatGptToolMeta("Canceling background task...", "Background task cancellation requested"),
+      inputSchema: { taskId: z.string(), reason: z.string().max(500).optional() },
+    },
+    async (input) =>
+      withErrorMapping(ctx, "task_cancel", input, async () => {
+        const manager = getTaskManager(ctx.stateDir);
+        const existing = await manager.get(input.taskId);
+        assertTaskOwnership(ctx, existing, "task_cancel");
+        const task = await manager.cancel(input.taskId);
+        await ctx.ledger.append({
+          type: "task.cancel.requested",
+          taskId: task.taskId,
+          projectId: task.projectId,
+          reason: input.reason,
+          instanceId: identity.instanceId,
+          sessionId: ctx.sessionId,
+        });
+        return makeResult({ task }, `Task ${task.taskId} cancellation requested (${task.status}).`);
+      }),
+  );
+
+  registerTool(
+    "task_result",
+    {
+      title: "Get background task result",
+      description: "Read the persisted result or error for a background task; returns ready=false while it is still queued/running.",
+      annotations: READ_ONLY_ANNOTATIONS,
+      _meta: chatGptToolMeta("Loading task result...", "Task result loaded"),
+      inputSchema: { taskId: z.string() },
+    },
+    async (input) =>
+      withErrorMapping(ctx, "task_result", input, async () => {
+        const task = await getTaskManager(ctx.stateDir).get(input.taskId);
+        assertTaskOwnership(ctx, task, "task_result");
+        const ready = task.status !== "queued" && task.status !== "running";
+        return makeResult({ task, ready }, ready ? `Task ${task.taskId} finished with ${task.status}.` : `Task ${task.taskId} is ${task.status}.`);
+      }),
   );
 
   registerTool(
@@ -1111,6 +1686,7 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
             ],
             customGptActionOperations: [
               "agent_guide",
+              "device_identity",
               "project_select",
               "save_chatgpt_image",
               "save_chatgpt_image_from_url",
@@ -1255,23 +1831,33 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
     "workspace_refresh_index",
     {
       title: "Refresh workspace index",
-      description: "Rescan the workspace root to refresh the project registry.",
+      description:
+        "Rescan the workspace root to refresh the project registry. Container workspaces are searched up to two directory levels by default; project-marker folders stop further traversal.",
       annotations: LOCAL_STATE_ANNOTATIONS,
       _meta: chatGptToolMeta("Refreshing workspace index...", "Workspace index refreshed"),
       inputSchema: {
-        depth: z.number().int().optional(),
+        depth: z.number().int().min(1).max(5).optional(),
         includeHidden: z.boolean().optional(),
       },
     },
     async (input) => {
       return withErrorMapping(ctx, "workspace_refresh_index", input, async () => {
-        const scanned = await scanWorkspace(ctx.workspaceRoot);
+        const scanned = await scanWorkspace(ctx.workspaceRoot, {
+          depth: input.depth,
+          includeHidden: input.includeHidden,
+        });
         ctx.registry.splice(0, ctx.registry.length, ...scanned);
         await ctx.store.saveProjects(scanned);
         const updatedAt = Date.now();
         return makeResult(
-          { count: scanned.length, updatedAt },
-          `Refreshed workspace index: ${scanned.length} project(s).`,
+          {
+            count: scanned.length,
+            updatedAt,
+            depth: input.depth ?? DEFAULT_SCAN_DEPTH,
+            includeHidden: input.includeHidden === true,
+            projects: scanned.map((entry) => ({ projectId: entry.projectId, name: entry.name, root: entry.root })),
+          },
+          `Refreshed workspace index: ${scanned.length} project(s) (depth=${input.depth ?? DEFAULT_SCAN_DEPTH}).`,
         );
       });
     },
@@ -1298,7 +1884,15 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
     async (input) => {
       return withErrorMapping(ctx, "project_select", input, async () => {
         const entries = await currentRegistry(ctx);
-        const result = findProject(entries, { projectId: input.projectId, name: input.projectId });
+        // `projectId` is the public field for historical clients, but a
+        // nested project can also be selected by its workspace-relative alias
+        // (for example `100_xxx/projectname`). Try the canonical id first and
+        // then resolve that same value as a name/alias without weakening exact
+        // project-id matching elsewhere.
+        let result = findProject(entries, { projectId: input.projectId });
+        if (!result.ok && result.reason === "not_found") {
+          result = findProject(entries, { name: input.projectId });
+        }
         if (!result.ok) {
           if (result.reason === "ambiguous") {
             throw new DomainError(ErrorCode.AMBIGUOUS_PROJECT, "Multiple projects match", {
@@ -1442,6 +2036,87 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
           rules.push({ file: candidate, summary });
         }
         return makeResult({ rules }, `Found ${rules.length} rule file(s) for ${entry.name}.`);
+      });
+    },
+  );
+
+  registerTool(
+    "project_bootstrap",
+    {
+      title: "Bootstrap project context",
+      description:
+        "Return a compact project briefing in one read-only call: metadata, git status, local rules, available commands, key files, and optional topic matches.",
+      annotations: READ_ONLY_ANNOTATIONS,
+      _meta: chatGptToolMeta("Bootstrapping project context...", "Project context ready"),
+      inputSchema: {
+        projectId: z.string().optional(),
+        name: z.string().optional(),
+        topic: z.string().optional(),
+        includePaths: z.array(z.string()).max(20).optional(),
+        maxBytes: z.number().int().positive().max(100_000).optional(),
+      },
+    },
+    async (input) => {
+      return withErrorMapping(ctx, "project_bootstrap", input, async () => {
+        const active = !input.projectId && !input.name ? await resolveActiveProject(ctx) : null;
+        const entry = active
+          ? await resolveOrThrow(ctx, { projectId: active.projectId })
+          : await resolveOrThrow(ctx, { projectId: input.projectId, name: input.name });
+        const [status, commands] = await Promise.all([gitStatus(entry.root), listCommands(entry.root)]);
+        const ruleFiles: Array<{ file: string; summary: string }> = [];
+        for (const candidate of ["AGENTS.md", "CLAUDE.md", ".codex/config.toml"]) {
+          const abs = await resolveInProject(entry.root, candidate, { allowSymlink: true }).catch(() => null);
+          if (!abs || !(await pathExists(abs))) continue;
+          await guardSecretPath(ctx, abs, "project_bootstrap");
+          const raw = await fs.readFile(abs, "utf8").catch(() => "");
+          ruleFiles.push({ file: candidate, summary: redact(raw).split("\n").slice(0, 20).join("\n").slice(0, 2_000) });
+        }
+        const defaultFiles = [
+          "README.md",
+          "package.json",
+          "pyproject.toml",
+          "Cargo.toml",
+          "src-tauri/tauri.conf.json",
+        ];
+        const requestedFiles = input.includePaths?.length ? input.includePaths : defaultFiles;
+        const maxBytes = input.maxBytes ?? 24_000;
+        const keyFiles: Array<{ path: string; content: string; truncated: boolean }> = [];
+        let bytesUsed = 0;
+        for (const rel of requestedFiles) {
+          if (bytesUsed >= maxBytes) break;
+          const abs = await resolveInProject(entry.root, rel, { allowSymlink: false }).catch(() => null);
+          if (!abs || !(await pathExists(abs)) || isSecretPath(abs)) continue;
+          await guardSecretPath(ctx, abs, "project_bootstrap");
+          const raw = await fs.readFile(abs, "utf8").catch(() => "");
+          const lines = raw.split("\n").slice(0, 80).join("\n");
+          const remaining = Math.max(0, maxBytes - bytesUsed);
+          const clipped = Buffer.byteLength(lines, "utf8") > remaining ? Buffer.from(lines, "utf8").subarray(0, remaining).toString("utf8") : lines;
+          if (!clipped) continue;
+          bytesUsed += Buffer.byteLength(clipped, "utf8");
+          keyFiles.push({ path: rel, content: redact(clipped), truncated: clipped.length < lines.length || raw.split("\n").length > 80 });
+        }
+        let contextMatches: unknown[] | undefined;
+        if (input.topic?.trim()) {
+          const searched = await codeSearch(entry.root, input.topic.trim(), "text", 20);
+          contextMatches = searched.matches.filter((match) => !isSecretPath(path.join(entry.root, match.path))).map((match) => ({ ...match, snippet: redact(match.snippet) }));
+        }
+        const nextActions = [
+          ...(ruleFiles.length ? ["Read the listed local rules before editing."] : ["No AGENTS/CLAUDE rules were found; inspect project conventions before editing."]),
+          ...(status.dirtyFiles.length ? [`Review ${status.dirtyFiles.length} existing dirty file(s) before changing them.`] : ["Working tree is clean; choose a small implementation slice."]),
+          "Use file_read_slice for the smallest relevant source slice, then file_apply_patch or change_and_verify.",
+        ];
+        return makeResult(
+          {
+            project: toProject(entry),
+            status: { branch: status.branch, dirtyFiles: status.dirtyFiles, staged: status.staged },
+            rules: ruleFiles,
+            commands,
+            keyFiles,
+            contextMatches,
+            nextActions,
+          },
+          `Bootstrapped ${entry.name}: ${ruleFiles.length} rule file(s), ${commands.length} command(s), ${keyFiles.length} key file(s).`,
+        );
       });
     },
   );
@@ -1607,6 +2282,7 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
         await requireProjectLease(ctx, input.projectId, "write");
         const entry = await resolveOrThrow(ctx, { projectId: input.projectId });
         const result = await applyPatch(entry.root, input.patch, input.preconditionHashes);
+        clearProjectIndex(entry.root);
         const checkpoint = await createCheckpoint(entry.root, input.projectId, "patch");
         const checkpointId = checkpoint.checkpointId;
         await ctx.ledger.append({
@@ -1650,6 +2326,7 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
         await requireProjectLease(ctx, input.projectId, "write");
         const entry = await resolveOrThrow(ctx, { projectId: input.projectId });
         const result = await createFile(entry.root, input.path, input.content, input.overwrite);
+        clearProjectIndex(entry.root);
         const checkpoint = await createCheckpoint(entry.root, input.projectId, "create");
         const checkpointId = checkpoint.checkpointId;
         await ctx.ledger.append({
@@ -1661,6 +2338,121 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
         return makeResult(
           { path: result.path, bytes: result.bytes, checkpointId },
           `Created ${result.path} (${result.bytes} bytes).`,
+        );
+      });
+    },
+  );
+
+  registerTool(
+    "change_and_verify",
+    {
+      title: "Apply change and verify",
+      description:
+        "Apply a hash-guarded patch, create a checkpoint, select up to three safe tests based on changed files, run them, and return the diff/verification evidence in one call.",
+      annotations: LOCAL_WRITE_ANNOTATIONS,
+      _meta: chatGptToolMeta("Applying and verifying change...", "Change verification complete"),
+      inputSchema: {
+        projectId: z.string(),
+        patch: z.string(),
+        preconditionHashes: z.record(z.string(), z.string()).optional(),
+        testCommandIds: z.array(z.string()).max(3).optional(),
+        maxTests: z.number().int().positive().max(3).optional(),
+        maxRetries: z.number().int().min(0).max(3).optional(),
+      },
+    },
+    async (input) => {
+      return withErrorMapping(ctx, "change_and_verify", input, async () => {
+        await requireProjectLease(ctx, input.projectId, "write");
+        const entry = await resolveOrThrow(ctx, { projectId: input.projectId });
+        const applied = await applyPatch(entry.root, input.patch, input.preconditionHashes);
+        clearProjectIndex(entry.root);
+        const checkpoint = await createCheckpoint(entry.root, input.projectId, "change-and-verify");
+        const changedFiles = applied.applied.map((operation) => operation.path);
+        const selected = await selectVerificationCommands(entry.root, changedFiles, input.testCommandIds, input.maxTests ?? 3);
+        const retryLimit = Math.min(3, Math.max(0, Math.floor(input.maxRetries ?? 0)));
+        const verificationAttempts: Array<Record<string, unknown>> = [];
+        let verification: Array<Record<string, unknown>> = [];
+        let sameFailureDetected = false;
+        let previousFailureFingerprint: string | undefined;
+        if (selected.length > 0) {
+          for (let attempt = 1; attempt <= retryLimit + 1; attempt += 1) {
+            const attemptResults: Array<Record<string, unknown>> = [];
+            for (const command of selected) {
+              await requireProjectLease(ctx, input.projectId, "verify");
+              const result = await runCommand(entry.root, command.commandId, [], undefined);
+              const stdoutSummary = redact(result.stdoutSummary);
+              const stderrSummary = redact(result.stderrSummary);
+              attemptResults.push({
+                ...command,
+                ...result,
+                stdoutSummary,
+                stderrSummary,
+                diagnostics: parseDiagnostics(`${stdoutSummary}\n${stderrSummary}`),
+              });
+              if (result.exitCode !== 0) break;
+            }
+            const failed = attemptResults.find((result) => result.exitCode !== 0);
+            const failureFingerprint = failed
+              ? createHash("sha256")
+                  .update(
+                    JSON.stringify({
+                      commandId: failed.commandId,
+                      exitCode: failed.exitCode,
+                      stdoutSummary: failed.stdoutSummary,
+                      stderrSummary: failed.stderrSummary,
+                      diagnostics: failed.diagnostics,
+                    }),
+                  )
+                  .digest("hex")
+                  .slice(0, 16)
+              : undefined;
+            verificationAttempts.push({ attempt, results: attemptResults, failureFingerprint });
+            verification = attemptResults;
+            if (!failed || attempt > retryLimit) break;
+            if (failureFingerprint && failureFingerprint === previousFailureFingerprint) {
+              sameFailureDetected = true;
+              break;
+            }
+            previousFailureFingerprint = failureFingerprint;
+          }
+        }
+        const diff = await gitDiffSummary(entry.root);
+        const verified = selected.length === 0 ? true : verification.length === selected.length && verification.every((result) => result.exitCode === 0);
+        await ctx.ledger.append({
+          type: "change_and_verify.completed",
+          projectId: input.projectId,
+          checkpointId: checkpoint.checkpointId,
+          changedFiles,
+          selectedCommands: selected.map((command) => command.commandId),
+          verified,
+          retryLimit,
+          attempts: verificationAttempts.length,
+          sameFailureDetected,
+          instanceId: identity.instanceId,
+          sessionId: ctx.sessionId,
+        });
+        return makeResult(
+          {
+            projectId: input.projectId,
+            applied: applied.applied,
+            checkpointId: checkpoint.checkpointId,
+            changedFiles,
+            selectedCommands: selected,
+            verification,
+            verificationAttempts,
+            verified,
+            retryLimit,
+            attempts: verificationAttempts.length,
+            sameFailureDetected,
+            diff: {
+              files: diff.files,
+              summary: diff.summary,
+            },
+          },
+          verified
+            ? `Applied ${changedFiles.length} file change(s) and verified successfully${selected.length ? ` with ${selected.length} command(s)` : " (no safe test command discovered)"}.`
+            : `Applied ${changedFiles.length} file change(s), but verification failed after ${verificationAttempts.length} attempt(s). Inspect the returned diagnostics before applying another change.`,
+          false,
         );
       });
     },
@@ -1726,6 +2518,7 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
           input.args,
           input.intent?.expectedDurationSec,
         );
+        if (input.intent?.writesWorkspace) clearProjectIndex(entry.root);
         await ctx.ledger.append({
           type: "process.output.redacted",
           projectId: input.projectId,
@@ -1739,6 +2532,7 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
             stderrSummary: redact(result.stderrSummary),
             durationMs: result.durationMs,
             outputTruncated: result.outputTruncated,
+            diagnostics: parseDiagnostics(`${result.stdoutSummary}\n${result.stderrSummary}`),
           },
           `Command ${input.commandId} exited ${result.exitCode} in ${result.durationMs}ms.`,
         );
@@ -1783,6 +2577,7 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
           shell: true,
         });
         const result = await runLocalShell(entry.root, input.command, input.cwd, input.timeoutSec);
+        if (input.intent?.writesWorkspace) clearProjectIndex(entry.root);
         await ctx.ledger.append({
           type: "process.output.redacted",
           projectId: input.projectId,
@@ -1797,6 +2592,7 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
             stderrSummary: result.stderrSummary,
             durationMs: result.durationMs,
             outputTruncated: result.outputTruncated,
+            diagnostics: parseDiagnostics(`${result.stdoutSummary}\n${result.stderrSummary}`),
           },
           `Local shell exited ${result.exitCode} in ${result.durationMs}ms.`,
         );
@@ -1955,6 +2751,7 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
           command: redact(input.command),
         });
         const result = await runLocalShell(entry.root, input.command, input.cwd, input.timeoutSec);
+        if (input.intent?.writesWorkspace) clearProjectIndex(entry.root);
         let screenshot:
           | {
               path: string;
@@ -1997,6 +2794,7 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
               stderrSummary: result.stderrSummary,
               durationMs: result.durationMs,
               outputTruncated: result.outputTruncated,
+              diagnostics: parseDiagnostics(`${result.stdoutSummary}\n${result.stderrSummary}`),
               screenshot,
             },
             `E2E command exited ${result.exitCode} in ${result.durationMs}ms${screenshot ? `; screenshot ready.\n${screenshot.markdown}` : ""}.`,
@@ -2076,6 +2874,7 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
 
             const command = discovered.command;
             const commandResult = command ? await runLocalShell(project.root, command, input.cwd, input.timeoutSec) : undefined;
+            if (commandResult) clearProjectIndex(project.root);
             const screenshotUrl = input.url ?? autoWaitUrl;
             const screenshots =
               discovered.targetKind === "desktop-app" && discovered.targetAppName && !input.url
@@ -2968,7 +3767,7 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
 
   // -------------------------------------------------------------------
   // Human-confirmed desktop control (registered only when the install-time
-  // CHATGPT2CODEX_CONTROL feature flag is on). These 4 tools are additionally
+  // CHATGPT2CODEX_CONTROL feature flag is on). These tools are additionally
   // hidden from CHATGPT_TO_CODEX's tools/list (installChatGptToolListHandler
   // below) and blocked on the generic call-tool bridge
   // (src/server/actions.ts callRegisteredTool) via CONTROL_TOOL_NAMES unless
@@ -2976,6 +3775,23 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
   // (isControlChatGptExposed) — the public-product default keeps both closed,
   // registering them here alone never exposes them to ChatGPT.
   // -------------------------------------------------------------------
+  // A read-only diagnostic remains available even when the action tools are
+  // hidden from ChatGPT. It makes the common "open a project with permission"
+  // failure actionable by showing the selected project, local grant, instance
+  // binding, allowlist, and the exact next step.
+  registerTool(
+    "computer_access_status",
+    {
+      title: "Check Computer Use access",
+      description:
+        "Read-only diagnostic for Computer Use. Reports the selected project, local Control Grant, MCP instance, allowlisted apps, and the next authorization step; it never captures a screen or sends input.",
+      annotations: READ_ONLY_ANNOTATIONS,
+      _meta: chatGptToolMeta("Checking Computer Use access...", "Computer Use access loaded"),
+      inputSchema: {},
+    },
+    async () => handleComputerAccessStatus(ctx),
+  );
+
   if (isControlEnabled()) {
     const controlTargetSchema = z
       .object({
@@ -3004,13 +3820,19 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
       {
         title: "Capture a desktop screenshot (control)",
         description:
-          "Capture the full screen or a specific app window for human-in-the-loop desktop control. No synthetic input; requires an active control lease (project_select preset=control). When the owner has opted in via CHATGPT2CODEX_CONTROL_CHATGPT, this tool is visible to ChatGPT and its client-side Confirm/Deny prompt (from the non-read-only annotation below) is the approval gate before capture happens. Refuses to capture sensitive apps (password managers, Keychain Access, System Settings, banking/2FA apps).",
+          "Capture the full screen or a specific app window for human-in-the-loop desktop control. No synthetic input; requires a local control lease or a bounded Control Grant issued locally on the Mac. When the owner has opted in via CHATGPT2CODEX_CONTROL_CHATGPT, this tool is visible to ChatGPT and its client-side Confirm/Deny prompt (from the non-read-only annotation below) is the approval gate before capture happens. Refuses to capture sensitive apps (password managers, Keychain Access, System Settings, banking/2FA apps).",
         annotations: CONTROL_ANNOTATIONS,
         _meta: chatGptToolMeta("Capturing desktop screenshot...", "Desktop screenshot captured"),
         inputSchema: {
           appName: z.string().optional(),
           label: z.string().optional(),
           waitMs: z.number().int().min(0).max(30_000).optional(),
+          targetInstanceId: z
+            .string()
+            .optional()
+            .describe(
+              "Recommended for remote calls; copy the exact instanceId returned by device_identity. Bound MCP connections may omit it for legacy-client compatibility.",
+            ),
         },
       },
       async (input) => handleComputerScreenshot(ctx, input),
@@ -3021,7 +3843,7 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
       {
         title: "Request a desktop click/type/key action (control)",
         description:
-          "Request a click/type/key action. Requires an active control lease (project_select preset=control). By default (CHATGPT2CODEX_CONTROL_CHATGPT off, or this tool called outside ChatGPT) it never executes anything itself: it always returns status=pending, and only a local human approving it lets src/control/executor.ts perform the real synthetic input. When the owner has opted in via CHATGPT2CODEX_CONTROL_CHATGPT, this tool is visible to ChatGPT and its client-side Confirm/Deny prompt on the owner's phone (from the non-read-only/destructive annotation below) is the approval gate instead: a confirmed call executes immediately through that same executor path (kill-switch re-check, darwin preflight, a second live-frontmost sensitive-app/allowlist check, before/after evidence, audit — tagged approvedVia=chatgpt). Sensitive apps are always refused, confirmed or not.",
+          "Request one click/type/key action. Requires a local control lease or a bounded Control Grant issued locally on the Mac. By default (CHATGPT2CODEX_CONTROL_CHATGPT off, or this tool called outside ChatGPT) it returns status=pending, and only local approval lets the executor perform the synthetic input. When the owner opts in for ChatGPT exposure, the client's Confirm/Deny prompt gates immediate execution through the same kill-switch, live allowlist, evidence, and audit path. Sensitive apps are always refused.",
         annotations: CONTROL_ANNOTATIONS,
         inputSchema: {
           appName: z.string().min(1),
@@ -3030,6 +3852,13 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
           text: z.string().optional(),
           keyCode: z.number().int().min(0).optional(),
           reason: z.string().min(1),
+          taskId: z.string().regex(/^ctask_[0-9a-fA-F-]{36}$/).optional(),
+          targetInstanceId: z
+            .string()
+            .optional()
+            .describe(
+              "Recommended for remote calls; copy the exact instanceId returned by device_identity. Bound MCP connections may omit it for legacy-client compatibility.",
+            ),
         },
         _meta: chatGptToolMeta("Confirming desktop action...", "Desktop action executed"),
       },
@@ -3037,11 +3866,39 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
     );
 
     registerTool(
+      "computer_task_execute",
+      {
+        title: "Run or continue a bounded Computer Use task",
+        description:
+          "Start or continue a persistent observe-act-observe Computer Use loop for one allowlisted app. A new task requires goal+appName; subsequent calls use taskId. This tool captures the next app observation, detects repeated unchanged screens and step-limit stalls, and tells the caller to issue one explicit computer_request_action linked by taskId. It requires either a local control lease or a short-lived Control Grant issued locally on the Mac.",
+        annotations: CONTROL_ANNOTATIONS,
+        _meta: chatGptToolMeta("Observing Computer Use task...", "Computer Use observation ready"),
+        inputSchema: {
+          goal: z.string().min(1).max(4000).optional(),
+          taskId: z.string().regex(/^ctask_[0-9a-fA-F-]{36}$/).optional(),
+          appName: z.string().min(1).optional(),
+          maxSteps: z.number().int().min(1).max(50).optional(),
+          lastActionId: z.string().regex(/^ctl_[0-9a-fA-F-]{36}$/).optional(),
+          done: z.boolean().optional(),
+          cancel: z.boolean().optional(),
+          outcome: z.string().max(2000).optional(),
+          targetInstanceId: z
+            .string()
+            .optional()
+            .describe(
+              "Recommended for remote calls; copy the exact instanceId returned by device_identity. Bound MCP connections may omit it for legacy-client compatibility.",
+            ),
+        },
+      },
+      async (input) => handleComputerTaskExecute(ctx, input),
+    );
+
+    registerTool(
       "computer_action_status",
       {
         title: "Check desktop control action status (control)",
         description:
-          "Read-only status check for one queued action (by actionId) or the whole current-session queue: pending/approved/rejected/done, never a trigger to execute anything. Requires an active control lease.",
+          "Read-only status check for one queued action (by actionId) or the allowed grant scope: pending/approved/rejected/done, never a trigger to execute anything. Requires a local control lease or active local Control Grant.",
         annotations: READ_ONLY_ANNOTATIONS,
         _meta: chatGptToolMeta("Checking desktop control status...", "Desktop control status loaded"),
         inputSchema: {
@@ -3049,6 +3906,12 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
             .string()
             .regex(/^ctl_[0-9a-fA-F-]{36}$/, "actionId must be a control action id issued by computer_request_action")
             .optional(),
+          targetInstanceId: z
+            .string()
+            .optional()
+            .describe(
+              "Recommended for remote calls; copy the exact instanceId returned by device_identity. Bound MCP connections may omit it for legacy-client compatibility.",
+            ),
         },
       },
       async (input) => handleComputerActionStatus(ctx, input),
@@ -3059,11 +3922,17 @@ export function registerTools(server: unknown, ctx: ToolContext): void {
       {
         title: "Kill the desktop control session (control)",
         description:
-          "Immediately disable desktop control for this session: rejects every pending action and blocks new requests until a fresh control lease (project_select preset=control) is granted. Idempotent. Requires an active control lease. Available to ChatGPT (as a normal Confirm/Deny action) whenever the desktop-control tools are exposed, so the owner can kill an in-progress session from the same phone that confirmed it.",
+          "Immediately disable desktop control: rejects every pending action, revokes the local Control Grant, and blocks new requests until a fresh local lease or grant is issued. Idempotent. Available to ChatGPT whenever the desktop-control tools are exposed, so the owner can kill an in-progress session from the same client that confirmed it.",
         annotations: CONTROL_ANNOTATIONS,
         _meta: chatGptToolMeta("Killing desktop control session...", "Desktop control session killed"),
         inputSchema: {
           reason: z.string().optional(),
+          targetInstanceId: z
+            .string()
+            .optional()
+            .describe(
+              "Recommended for remote calls; copy the exact instanceId returned by device_identity. Bound MCP connections may omit it for legacy-client compatibility.",
+            ),
         },
       },
       async (input) => handleComputerKillSwitch(ctx, input),

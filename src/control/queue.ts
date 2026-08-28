@@ -3,6 +3,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { DomainError, ErrorCode } from "../types.js";
 import { clearAuto } from "./auto.js";
+import { clearControlGrant } from "./grant.js";
 
 /**
  * Pending/approved/rejected/done control-action queue persisted under
@@ -199,6 +200,7 @@ export async function setKill(stateDir: string): Promise<void> {
     // Non-fatal.
   }
   await clearAuto(stateDir);
+  await clearControlGrant(stateDir);
   const pendingDir = statusDir(stateDir, "pending");
   const files = await fs.readdir(pendingDir).catch(() => [] as string[]);
   for (const file of files) {

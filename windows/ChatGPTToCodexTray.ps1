@@ -66,6 +66,8 @@ $Localization = @{
     quit = @("Quit", "종료", "終了", "退出", "結束", "Salir", "Quitter", "Beenden", "Sair", "Esci", "Afsluiten", "Zakończ", "Выход", "Çık", "Thoát", "Keluar", "ออก", "إنهاء", "बंद करें", "Вийти")
     settingsTitle = @("ChatGPT To Codex Settings", "ChatGPT To Codex 설정", "ChatGPT To Codex 設定", "ChatGPT To Codex 设置", "ChatGPT To Codex 設定", "Ajustes de ChatGPT To Codex", "Réglages de ChatGPT To Codex", "ChatGPT To Codex Einstellungen", "Configurações do ChatGPT To Codex", "Impostazioni ChatGPT To Codex", "ChatGPT To Codex instellingen", "Ustawienia ChatGPT To Codex", "Настройки ChatGPT To Codex", "ChatGPT To Codex ayarları", "Cài đặt ChatGPT To Codex", "Pengaturan ChatGPT To Codex", "การตั้งค่า ChatGPT To Codex", "إعدادات ChatGPT To Codex", "ChatGPT To Codex सेटिंग्स", "Налаштування ChatGPT To Codex")
     language = @("Language", "언어", "言語", "语言", "語言", "Idioma", "Langue", "Sprache", "Idioma", "Lingua", "Taal", "Język", "Язык", "Dil", "Ngôn ngữ", "Bahasa", "ภาษา", "اللغة", "भाषा", "Мова")
+    instanceName = @("MCP instance name", "MCP 인스턴스 이름")
+    instanceNameHint = @("Give this installation a unique name, such as Office PC or Home PC. The name is included in health checks and tool results.", "이 설치본을 구분할 고유 이름을 입력하세요(예: 사무실 PC, 집 PC). 상태 확인과 도구 결과에 이 이름이 표시됩니다.")
     projectFolder = @("Project folder", "프로젝트 폴더", "プロジェクトフォルダ", "项目文件夹", "專案資料夾", "Carpeta del proyecto", "Dossier du projet", "Projektordner", "Pasta do projeto", "Cartella progetto", "Projectmap", "Folder projektu", "Папка проекта", "Proje klasörü", "Thư mục dự án", "Folder proyek", "โฟลเดอร์โปรเจกต์", "مجلد المشروع", "प्रोजेक्ट फ़ोल्डर", "Тека проєкту")
     browse = @("Browse...", "찾아보기...", "参照...", "浏览...", "瀏覽...", "Examinar...", "Parcourir...", "Durchsuchen...", "Procurar...", "Sfoglia...", "Bladeren...", "Przeglądaj...", "Обзор...", "Gözat...", "Duyệt...", "Telusuri...", "เรียกดู...", "استعراض...", "ब्राउज़...", "Огляд...")
     publicHostname = @("Owned fixed domain (optional)", "본인 소유 고정 도메인 (선택)", "所有する固定ドメイン (任意)", "自有固定域名（可选）", "自有固定網域（選填）", "Dominio fijo propio (opcional)", "Domaine fixe personnel (facultatif)", "Eigene feste Domain (optional)", "Domínio fixo próprio (opcional)", "Dominio fisso personale (opzionale)", "Eigen vast domein (optioneel)", "Własna stała domena (opcjonalnie)", "Собственный постоянный домен (необязательно)", "Kendi sabit alan adınız (isteğe bağlı)", "Tên miền cố định của bạn (tùy chọn)", "Domain tetap milik Anda (opsional)", "โดเมนคงที่ของคุณ (ไม่บังคับ)", "نطاق ثابت تملكه (اختياري)", "आपका स्थिर डोमेन (वैकल्पिक)", "Власний сталий домен (необов'язково)")
@@ -125,6 +127,7 @@ function Load-Settings {
     }
     return [pscustomobject]@{
         ProjectFolder = ""
+        DisplayName = if ($env:CHATGPT2CODEX_DISPLAY_NAME) { $env:CHATGPT2CODEX_DISPLAY_NAME } else { "ChatGPT To Codex ($env:COMPUTERNAME)" }
         Port = 7979
         PublicHostname = ""
         EnablePublicTunnel = $false
@@ -143,6 +146,7 @@ function Save-Settings($Settings) {
 $script:Settings = Load-Settings
 foreach ($entry in @{
     ProjectFolder = ""
+    DisplayName = if ($env:CHATGPT2CODEX_DISPLAY_NAME) { $env:CHATGPT2CODEX_DISPLAY_NAME } else { "ChatGPT To Codex ($env:COMPUTERNAME)" }
     Port = 7979
     PublicHostname = ""
     EnablePublicTunnel = $false
@@ -260,6 +264,7 @@ function Start-Service {
     $psi.RedirectStandardError = $true
     $psi.EnvironmentVariables["WORKSPACE"] = Get-Workspace
     $psi.EnvironmentVariables["PORT"] = "$(Get-Port)"
+    $psi.EnvironmentVariables["CHATGPT2CODEX_DISPLAY_NAME"] = [string]$script:Settings.DisplayName
     $psi.EnvironmentVariables["PATH"] = "$RuntimeRoot\bin;$env:USERPROFILE\.local\bin;$($psi.EnvironmentVariables["PATH"])"
     if ($script:Settings.PublicHostname) {
         $psi.EnvironmentVariables["PUBLIC_HOSTNAME"] = $script:Settings.PublicHostname
@@ -373,7 +378,7 @@ function Show-Settings {
     $form = [System.Windows.Forms.Form]::new()
     $form.Text = L "settingsTitle"
     $form.Width = 520
-    $form.Height = 560
+    $form.Height = 610
     $form.StartPosition = "CenterScreen"
     $form.FormBorderStyle = "FixedDialog"
     $form.MaximizeBox = $false
@@ -393,16 +398,27 @@ function Show-Settings {
     $languageBox.SelectedIndex = $selectedIndex
     $languageBox.SetBounds(18, 42, 220, 26)
 
+    $instanceLabel = [System.Windows.Forms.Label]::new()
+    $instanceLabel.Text = L "instanceName"
+    $instanceLabel.SetBounds(18, 80, 150, 24)
+    $instanceBox = [System.Windows.Forms.TextBox]::new()
+    $instanceBox.Text = [string]$script:Settings.DisplayName
+    $instanceBox.SetBounds(18, 104, 472, 26)
+    $instanceHint = [System.Windows.Forms.Label]::new()
+    $instanceHint.Text = L "instanceNameHint"
+    $instanceHint.SetBounds(18, 132, 472, 28)
+    $instanceHint.ForeColor = [System.Drawing.SystemColors]::GrayText
+
     $projectLabel = [System.Windows.Forms.Label]::new()
     $projectLabel.Text = L "projectFolder"
-    $projectLabel.SetBounds(18, 80, 150, 24)
+    $projectLabel.SetBounds(18, 170, 150, 24)
     $projectBox = [System.Windows.Forms.TextBox]::new()
     $projectBox.Text = $script:Settings.ProjectFolder
     $projectBox.ReadOnly = $true
-    $projectBox.SetBounds(18, 104, 380, 26)
+    $projectBox.SetBounds(18, 194, 380, 26)
     $browse = [System.Windows.Forms.Button]::new()
     $browse.Text = L "browse"
-    $browse.SetBounds(408, 103, 82, 28)
+    $browse.SetBounds(408, 193, 82, 28)
     $browse.Add_Click({
         $dialog = [System.Windows.Forms.FolderBrowserDialog]::new()
         if ($projectBox.Text) { $dialog.SelectedPath = $projectBox.Text }
@@ -413,88 +429,89 @@ function Show-Settings {
 
     $hostLabel = [System.Windows.Forms.Label]::new()
     $hostLabel.Text = L "publicHostname"
-    $hostLabel.SetBounds(18, 142, 210, 24)
+    $hostLabel.SetBounds(18, 232, 210, 24)
     $hostBox = [System.Windows.Forms.TextBox]::new()
     $hostBox.Text = $script:Settings.PublicHostname
-    $hostBox.SetBounds(18, 166, 300, 26)
+    $hostBox.SetBounds(18, 256, 300, 26)
     $hostHint = [System.Windows.Forms.Label]::new()
     $hostHint.Text = L "publicHostnameHint"
-    $hostHint.SetBounds(18, 194, 472, 52)
+    $hostHint.SetBounds(18, 284, 472, 52)
     $portLabel = [System.Windows.Forms.Label]::new()
     $portLabel.Text = L "portPrefix"
-    $portLabel.SetBounds(336, 142, 60, 24)
+    $portLabel.SetBounds(336, 232, 60, 24)
     $portBox = [System.Windows.Forms.NumericUpDown]::new()
     $portBox.Minimum = 1024
     $portBox.Maximum = 65535
     $portBox.Value = Get-Port
-    $portBox.SetBounds(336, 166, 154, 26)
+    $portBox.SetBounds(336, 256, 154, 26)
 
     $launch = [System.Windows.Forms.CheckBox]::new()
     $launch.Text = L "launchWindowsSetting"
     $launch.Checked = [bool]$script:Settings.LaunchAtLogin
-    $launch.SetBounds(18, 250, 430, 26)
+    $launch.SetBounds(18, 340, 430, 26)
     $start = [System.Windows.Forms.CheckBox]::new()
     $start.Text = L "startOnOpenSetting"
     $start.Checked = [bool]$script:Settings.StartMcpOnLaunch
-    $start.SetBounds(18, 276, 430, 26)
+    $start.SetBounds(18, 366, 430, 26)
     $updates = [System.Windows.Forms.CheckBox]::new()
     $updates.Text = L "autoUpdatesSetting"
     $updates.Checked = [bool]$script:Settings.AutoCheckUpdates
-    $updates.SetBounds(18, 302, 430, 26)
+    $updates.SetBounds(18, 392, 430, 26)
     $publicTunnel = [System.Windows.Forms.CheckBox]::new()
     $publicTunnel.Text = L "publicTunnelSetting"
     $publicTunnel.Checked = Get-EnablePublicTunnel
-    $publicTunnel.SetBounds(18, 328, 472, 26)
+    $publicTunnel.SetBounds(18, 418, 472, 26)
 
     $copyButton = [System.Windows.Forms.Button]::new()
     $copyButton.Text = L "copyConnector"
-    $copyButton.SetBounds(18, 364, 150, 28)
+    $copyButton.SetBounds(18, 454, 150, 28)
     $copyButton.Add_Click({ Copy-ConnectorUrl })
     $localHealthButton = [System.Windows.Forms.Button]::new()
     $localHealthButton.Text = L "openLocalHealth"
-    $localHealthButton.SetBounds(178, 364, 150, 28)
+    $localHealthButton.SetBounds(178, 454, 150, 28)
     $localHealthButton.Add_Click({ Open-Url "http://127.0.0.1:$(Get-Port)/healthz" })
     $publicHealthButton = [System.Windows.Forms.Button]::new()
     $publicHealthButton.Text = L "openPublicHealth"
-    $publicHealthButton.SetBounds(338, 364, 152, 28)
+    $publicHealthButton.SetBounds(338, 454, 152, 28)
     $publicHealthButton.Add_Click({
         $base = Discover-PublicBaseUrl
         if ($base) { Open-Url "$base/healthz" }
     })
     $repoButton = [System.Windows.Forms.Button]::new()
     $repoButton.Text = L "openGithub"
-    $repoButton.SetBounds(18, 398, 150, 28)
+    $repoButton.SetBounds(18, 488, 150, 28)
     $repoButton.Add_Click({ Open-Url (Get-RepoUrl) })
     $updatesButton = [System.Windows.Forms.Button]::new()
     $updatesButton.Text = L "checkUpdates"
-    $updatesButton.SetBounds(178, 398, 150, 28)
+    $updatesButton.SetBounds(178, 488, 150, 28)
     $updatesButton.Add_Click({ Check-Updates $true })
     $logsButton = [System.Windows.Forms.Button]::new()
     $logsButton.Text = L "showLogs"
-    $logsButton.SetBounds(338, 398, 152, 28)
+    $logsButton.SetBounds(338, 488, 152, 28)
     $logsButton.Add_Click({ if (-not (Test-Path $LogPath)) { New-Item -ItemType File -Force -Path $LogPath | Out-Null }; Start-Process notepad.exe $LogPath })
     $logFolderButton = [System.Windows.Forms.Button]::new()
     $logFolderButton.Text = L "openLogFolder"
-    $logFolderButton.SetBounds(18, 432, 150, 28)
+    $logFolderButton.SetBounds(18, 522, 150, 28)
     $logFolderButton.Add_Click({ Start-Process explorer.exe $LogDir })
     $copyright = [System.Windows.Forms.Label]::new()
     $copyright.Text = "Copyright 2026 ezBuilder. All rights reserved."
-    $copyright.SetBounds(178, 437, 300, 22)
+    $copyright.SetBounds(178, 527, 300, 22)
 
     $ok = [System.Windows.Forms.Button]::new()
     $ok.Text = L "save"
     $ok.DialogResult = [System.Windows.Forms.DialogResult]::OK
-    $ok.SetBounds(318, 472, 82, 30)
+    $ok.SetBounds(318, 562, 82, 30)
     $cancel = [System.Windows.Forms.Button]::new()
     $cancel.Text = L "cancel"
     $cancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
-    $cancel.SetBounds(408, 472, 82, 30)
+    $cancel.SetBounds(408, 562, 82, 30)
     $form.AcceptButton = $ok
     $form.CancelButton = $cancel
-    $form.Controls.AddRange(@($languageLabel, $languageBox, $projectLabel, $projectBox, $browse, $hostLabel, $hostBox, $hostHint, $portLabel, $portBox, $launch, $start, $updates, $publicTunnel, $copyButton, $localHealthButton, $publicHealthButton, $repoButton, $updatesButton, $logsButton, $logFolderButton, $copyright, $ok, $cancel))
+    $form.Controls.AddRange(@($languageLabel, $languageBox, $instanceLabel, $instanceBox, $instanceHint, $projectLabel, $projectBox, $browse, $hostLabel, $hostBox, $hostHint, $portLabel, $portBox, $launch, $start, $updates, $publicTunnel, $copyButton, $localHealthButton, $publicHealthButton, $repoButton, $updatesButton, $logsButton, $logFolderButton, $copyright, $ok, $cancel))
 
     if ($form.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
         $wasRunning = $script:LatestHealth
+        $script:Settings.DisplayName = $instanceBox.Text.Trim()
         $script:Settings.ProjectFolder = $projectBox.Text
         $script:Settings.PublicHostname = $hostBox.Text.Trim()
         $script:Settings.Port = [int]$portBox.Value
