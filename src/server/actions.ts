@@ -502,7 +502,10 @@ async function callRegisteredTool(
       content: [{ type: "text", text: message }],
     };
   }
-  const server = await createMcpServer(ctx);
+  // Treat the HTTP Action bridge as a remote caller. In particular this
+  // lets desktop-control handlers require a separately local-issued Control
+  // Grant instead of inheriting or creating a local session control lease.
+  const server = await createMcpServer({ ...ctx, remote: true });
   const tools = (server as unknown as { _registeredTools?: Record<string, RegisteredToolLike> })._registeredTools;
   const registered = tools?.[toolName];
   const handler = registered?.handler;

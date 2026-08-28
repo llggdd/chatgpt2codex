@@ -96,6 +96,16 @@ private let desktopLocalizationRows: [String: [String]] = [
     "autoApproveOffMenu": ["Turn off auto-approve", "자동 승인 끄기"],
     "autoApproveStatusMenu": ["Auto-approve: on", "자동 승인: 켜짐"],
     "autoApproveUnavailableMenu": ["Auto-approve needs an allowlisted app (CHATGPT2CODEX_CONTROL_ALLOWLIST)", "자동 승인을 사용하려면 허용 목록(CHATGPT2CODEX_CONTROL_ALLOWLIST) 앱이 필요합니다"],
+    "computerUseSetting": ["Allow bounded Computer Use from ChatGPT", "ChatGPT의 제한형 Computer Use 허용"],
+    "computerUseApps": ["Allowed apps", "허용 앱"],
+    "computerUseAppsHint": ["Comma-separated app names. Password managers, Terminal, and other sensitive apps remain blocked.", "쉼표로 앱 이름을 구분합니다. 암호 관리자, 터미널 등 민감 앱은 계속 차단됩니다."],
+    "computerUseLimits": ["Grant limits", "권한 제한"],
+    "computerUseMinutesPlaceholder": ["minutes (1-60)", "분 (1-60)"],
+    "computerUseActionsPlaceholder": ["actions (1-100)", "동작 수 (1-100)"],
+    "computerUseGrantFailedTitle": ["Computer Use grant failed", "Computer Use 권한 발급 실패"],
+    "computerUseGrantOnMenu": ["Grant Computer Use now", "Computer Use 권한 지금 발급"],
+    "computerUseGrantOffMenu": ["Revoke Computer Use grant", "Computer Use 권한 회수"],
+    "computerUseGrantUnavailableMenu": ["Configure Computer Use, an allowed app, and a project in Settings first.", "먼저 설정에서 Computer Use, 허용 앱, 프로젝트를 구성하세요."],
     "autoUpdatesMenu": ["Auto Check for Updates", "업데이트 자동 확인", "更新を自動確認", "自动检查更新", "自動檢查更新", "Buscar actualizaciones automáticamente", "Recherche auto des mises à jour", "Automatisch nach Updates suchen", "Verificar atualizações automaticamente", "Controlla aggiornamenti automaticamente", "Automatisch updates zoeken", "Automatycznie sprawdzaj aktualizacje", "Автопроверка обновлений", "Güncellemeleri otomatik denetle", "Tự động kiểm tra cập nhật", "Periksa pembaruan otomatis", "ตรวจอัปเดตอัตโนมัติ", "التحقق التلقائي من التحديثات", "अपडेट अपने-आप जांचें", "Автоматично перевіряти оновлення"],
     "openLocalHealth": ["Open Local Health", "로컬 상태 열기", "ローカルヘルスを開く", "打开本地健康检查", "開啟本機健康檢查", "Abrir estado local", "Ouvrir l'état local", "Lokalen Status öffnen", "Abrir saúde local", "Apri stato locale", "Lokale status openen", "Otwórz status lokalny", "Открыть локальный статус", "Yerel durumu aç", "Mở trạng thái cục bộ", "Buka kesehatan lokal", "เปิดสถานะภายใน", "فتح حالة الجهاز", "स्थानीय हेल्थ खोलें", "Відкрити локальний стан"],
     "openPublicHealth": ["Open Public Health", "공개 상태 열기", "公開ヘルスを開く", "打开公开健康检查", "開啟公開健康檢查", "Abrir estado público", "Ouvrir l'état public", "Öffentlichen Status öffnen", "Abrir saúde pública", "Apri stato pubblico", "Publieke status openen", "Otwórz status publiczny", "Открыть публичный статус", "Genel durumu aç", "Mở trạng thái công khai", "Buka kesehatan publik", "เปิดสถานะสาธารณะ", "فتح الحالة العامة", "सार्वजनिक हेल्थ खोलें", "Відкрити публічний стан"],
@@ -208,6 +218,10 @@ private final class ServiceController {
     private let launchAtLoginKey = "launchAtLogin"
     private let startMCPOnLaunchKey = "startMCPOnLaunch"
     private let autoCheckUpdatesKey = "autoCheckUpdates"
+    private let computerUseEnabledKey = "computerUseEnabled"
+    private let controlAllowlistKey = "controlAllowlist"
+    private let controlGrantMinutesKey = "controlGrantMinutes"
+    private let controlGrantMaxActionsKey = "controlGrantMaxActions"
     private(set) var process: Process?
 
     let appName = "ChatGPT To Codex"
@@ -301,6 +315,24 @@ private final class ServiceController {
 
     var autoCheckUpdates: Bool {
         defaults.bool(forKey: autoCheckUpdatesKey)
+    }
+
+    var computerUseEnabled: Bool {
+        if let raw = environment["CHATGPT2CODEX_CONTROL_CHATGPT"] {
+            let normalized = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            return normalized == "1" || normalized == "true" || normalized == "yes" || normalized == "on"
+        }
+        return defaults.bool(forKey: computerUseEnabledKey)
+    }
+
+    var controlGrantMinutes: Int {
+        let saved = defaults.integer(forKey: controlGrantMinutesKey)
+        return min(60, max(1, saved > 0 ? saved : 10))
+    }
+
+    var controlGrantMaxActions: Int {
+        let saved = defaults.integer(forKey: controlGrantMaxActionsKey)
+        return min(100, max(1, saved > 0 ? saved : 20))
     }
 
     var githubRepoURL: URL {
@@ -495,14 +527,55 @@ private final class ServiceController {
     }
 
     /// The same `CHATGPT2CODEX_CONTROL_ALLOWLIST` the managed subprocess
-    /// sees (src/control/policy.ts controlAllowlist), read here only to
-    /// supply `--apps` for the status-bar auto-approve toggle below — this
-    /// never widens the scope beyond what the operator already allowlisted.
+    /// sees. An explicit process environment remains authoritative; normal
+    /// app launches use the allowlist saved in the status-bar settings.
     var controlAllowlistApps: [String] {
-        (environment["CHATGPT2CODEX_CONTROL_ALLOWLIST"] ?? "")
+        let configured = environment["CHATGPT2CODEX_CONTROL_ALLOWLIST"]
+        let saved = defaults.string(forKey: controlAllowlistKey)
+        return (configured ?? saved ?? "")
             .split(separator: ",")
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
+    }
+
+    /// Creates the local, expiring capability consumed by remote Computer
+    /// Use actions. The CLI resolves the selected project and re-validates
+    /// the allowlist and sensitive-app policy before writing the grant.
+    func issueComputerUseGrant() -> (ok: Bool, message: String) {
+        guard computerUseEnabled else { return (false, "Computer Use is disabled") }
+        guard let root = activeProjectRoot else { return (false, "Select a registered project first") }
+        let apps = controlAllowlistApps
+        guard !apps.isEmpty else { return (false, "Add at least one allowed app") }
+        do {
+            let result = try runCli([
+                "control", "grant", "on",
+                "--project-root", root,
+                "--apps", apps.joined(separator: ","),
+                "--minutes", "\(controlGrantMinutes)",
+                "--max", "\(controlGrantMaxActions)"
+            ])
+            return (result.status == 0, result.status == 0 ? result.stdout : result.stderr)
+        } catch {
+            return (false, error.localizedDescription)
+        }
+    }
+
+    @discardableResult
+    func revokeComputerUseGrant() -> Bool {
+        (try? runCli(["control", "grant", "off"]))?.status == 0
+    }
+
+    func computerUseGrantStatus() -> (enabled: Bool, remainingMs: Int, usedActions: Int, maxActions: Int) {
+        guard let result = try? runCli(["control", "grant", "status"]), result.status == 0,
+              let data = result.stdout.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              obj["controlGrantActive"] as? Bool == true
+        else {
+            return (false, 0, 0, 0)
+        }
+        let expiresAt = obj["expiresAt"] as? Double ?? 0
+        let remainingMs = max(0, Int(expiresAt - Date().timeIntervalSince1970 * 1000))
+        return (true, remainingMs, obj["usedActions"] as? Int ?? 0, obj["maxActions"] as? Int ?? 0)
     }
 
     /// `chatgpt2codex control auto status`.
@@ -547,6 +620,8 @@ private final class ServiceController {
 
         var environment = ProcessInfo.processInfo.environment
         environment["PATH"] = "\(runtimeRoot.appendingPathComponent("bin").path):\(NSHomeDirectory())/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:\(environment["PATH"] ?? "")"
+        environment["CHATGPT2CODEX_CONTROL_ALLOWLIST"] = controlAllowlistApps.joined(separator: ",")
+        environment["CHATGPT2CODEX_CONTROL_CHATGPT"] = computerUseEnabled ? "1" : "0"
         process.environment = environment
 
         let stdoutPipe = Pipe()
@@ -664,6 +739,13 @@ private final class ServiceController {
 
     func setAutoCheckUpdates(_ enabled: Bool) {
         defaults.set(enabled, forKey: autoCheckUpdatesKey)
+    }
+
+    func setComputerUse(enabled: Bool, apps: String, minutes: Int, maxActions: Int) {
+        defaults.set(enabled, forKey: computerUseEnabledKey)
+        defaults.set(apps.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }.joined(separator: ","), forKey: controlAllowlistKey)
+        defaults.set(min(60, max(1, minutes)), forKey: controlGrantMinutesKey)
+        defaults.set(min(100, max(1, maxActions)), forKey: controlGrantMaxActionsKey)
     }
 
     func setPreferredLanguage(_ value: String) {
@@ -802,6 +884,8 @@ private final class ServiceController {
         export WORKSPACE=\(shellQuote(workspace))
         export PORT=\(port)
         export CHATGPT2CODEX_DISPLAY_NAME=\(shellQuote(displayName))
+        export CHATGPT2CODEX_CONTROL_ALLOWLIST=\(shellQuote(controlAllowlistApps.joined(separator: ",")))
+        \(computerUseEnabled ? "export CHATGPT2CODEX_CONTROL_CHATGPT=1" : "unset CHATGPT2CODEX_CONTROL_CHATGPT")
         \(enablePublicTunnel ? "export CHATGPT2CODEX_EXPOSE_WEB=1" : "unset CHATGPT2CODEX_EXPOSE_WEB")
         \(publicHost.map { "export PUBLIC_HOSTNAME=\(shellQuote($0))" } ?? "unset PUBLIC_HOSTNAME")
         \(cloudflaredTunnelName.map { "export CLOUDFLARED_TUNNEL_NAME=\(shellQuote($0))" } ?? "")
@@ -997,6 +1081,10 @@ private final class StatusBarAppDelegate: NSObject, NSApplicationDelegate, NSMen
     private var settingsOwnerTokenConfigured = false
     private weak var settingsHostField: NSTextField?
     private weak var settingsPortField: NSTextField?
+    private weak var settingsComputerUseEnabled: NSButton?
+    private weak var settingsControlAppsField: NSTextField?
+    private weak var settingsControlMinutesField: NSTextField?
+    private weak var settingsControlMaxActionsField: NSTextField?
 
     private func t(_ key: String) -> String {
         controller.localized(key)
@@ -1273,6 +1361,24 @@ private final class StatusBarAppDelegate: NSObject, NSApplicationDelegate, NSMen
         guard menu === pendingControlSubmenu else { return }
         menu.removeAllItems()
 
+        let grantStatus = controller.computerUseGrantStatus()
+        let grantItem: NSMenuItem
+        if grantStatus.enabled {
+            let minutesLeft = max(1, grantStatus.remainingMs / 60000)
+            grantItem = NSMenuItem(
+                title: "\(t("computerUseGrantOffMenu")) (\(minutesLeft)m, \(grantStatus.usedActions)/\(grantStatus.maxActions))",
+                action: #selector(toggleComputerUseGrant),
+                keyEquivalent: ""
+            )
+        } else {
+            grantItem = NSMenuItem(title: t("computerUseGrantOnMenu"), action: #selector(toggleComputerUseGrant), keyEquivalent: "")
+        }
+        grantItem.target = self
+        grantItem.isEnabled = grantStatus.enabled || (controller.computerUseEnabled && controller.activeProjectRoot != nil && !controller.controlAllowlistApps.isEmpty)
+        if !grantItem.isEnabled { grantItem.toolTip = t("computerUseGrantUnavailableMenu") }
+        menu.addItem(grantItem)
+        menu.addItem(.separator())
+
         // Auto-approve toggle: local-human-only (runCli(["control", "auto",
         // ...]) — see ServiceController.enableAutoApprove/disableAutoApprove
         // above). Shown disabled when the current control allowlist is empty
@@ -1347,6 +1453,22 @@ private final class StatusBarAppDelegate: NSObject, NSApplicationDelegate, NSMen
 
     @objc private func approveAllPendingControlActions() {
         controller.approveAllControlActions()
+    }
+
+    @objc private func toggleComputerUseGrant() {
+        if controller.computerUseGrantStatus().enabled {
+            controller.revokeComputerUseGrant()
+            return
+        }
+        let grant = controller.issueComputerUseGrant()
+        if !grant.ok {
+            let alert = NSAlert()
+            alert.messageText = t("computerUseGrantFailedTitle")
+            alert.informativeText = grant.message
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: t("ok"))
+            alert.runModal()
+        }
     }
 
     /// Local-human-only auto-approve toggle: always shells out to
@@ -1440,7 +1562,11 @@ private final class StatusBarAppDelegate: NSObject, NSApplicationDelegate, NSMen
         let publicHintHeight = measuredHintHeight(publicHintText, width: hintWidth)
         let localPortY = publicHintY + publicHintHeight + 18
         let portFieldY = localPortY - 4
-        let actionRow1Y = localPortY + 44
+        let computerUseY = localPortY + 42
+        let computerUseAppsY = computerUseY + 34
+        let computerUseHintY = computerUseAppsY + 30
+        let computerUseLimitsY = computerUseHintY + 34
+        let actionRow1Y = computerUseLimitsY + 44
         let actionRow2Y = actionRow1Y + 38
         let footerY = actionRow2Y + 54
         let footerButtonY = footerY - 6
@@ -1570,6 +1696,26 @@ private final class StatusBarAppDelegate: NSObject, NSApplicationDelegate, NSMen
         settingsPortField = portField
         content.addSubview(portField)
 
+        let computerUse = NSButton(checkboxWithTitle: t("computerUseSetting"), target: nil, action: nil)
+        computerUse.frame = NSRect(x: 190, y: computerUseY, width: 322, height: 22)
+        computerUse.state = controller.computerUseEnabled ? .on : .off
+        settingsComputerUseEnabled = computerUse
+        content.addSubview(computerUse)
+        content.addSubview(label(t("computerUseApps"), x: 28, y: computerUseAppsY + 4, width: 150))
+        let controlAppsField = field(controller.controlAllowlistApps.joined(separator: ", "), x: 190, y: computerUseAppsY, width: 322, placeholder: "Safari, TextEdit")
+        settingsControlAppsField = controlAppsField
+        content.addSubview(controlAppsField)
+        content.addSubview(hint(t("computerUseAppsHint"), x: 190, y: computerUseHintY, width: 322, height: 30))
+        content.addSubview(label(t("computerUseLimits"), x: 28, y: computerUseLimitsY + 4, width: 150))
+        let minutesField = field("\(controller.controlGrantMinutes)", x: 190, y: computerUseLimitsY, width: 150, placeholder: t("computerUseMinutesPlaceholder"))
+        minutesField.toolTip = t("computerUseMinutesPlaceholder")
+        settingsControlMinutesField = minutesField
+        content.addSubview(minutesField)
+        let maxActionsField = field("\(controller.controlGrantMaxActions)", x: 362, y: computerUseLimitsY, width: 150, placeholder: t("computerUseActionsPlaceholder"))
+        maxActionsField.toolTip = t("computerUseActionsPlaceholder")
+        settingsControlMaxActionsField = maxActionsField
+        content.addSubview(maxActionsField)
+
         let actionColW: CGFloat = 235
         let actionCol2X: CGFloat = 277
         content.addSubview(button(t("copyConnector"), x: 28, y: actionRow1Y, width: actionColW, action: #selector(copyConnectorURL)))
@@ -1638,7 +1784,11 @@ private final class StatusBarAppDelegate: NSObject, NSApplicationDelegate, NSMen
               let startOnLaunch = settingsStartOnLaunch,
               let publicTunnel = settingsPublicTunnel,
               let hostField = settingsHostField,
-              let portField = settingsPortField
+              let portField = settingsPortField,
+              let computerUse = settingsComputerUseEnabled,
+              let controlAppsField = settingsControlAppsField,
+              let controlMinutesField = settingsControlMinutesField,
+              let controlMaxActionsField = settingsControlMaxActionsField
         else { return }
         let projectPath = projectField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         if projectPath.isEmpty {
@@ -1663,6 +1813,26 @@ private final class StatusBarAppDelegate: NSObject, NSApplicationDelegate, NSMen
             controller.setPort(port)
         }
         controller.setDisplayName(settingsDisplayNameField?.stringValue ?? controller.displayName)
+        let computerUseEnabled = computerUse.state == .on
+        controller.setComputerUse(
+            enabled: computerUseEnabled,
+            apps: controlAppsField.stringValue,
+            minutes: Int(controlMinutesField.stringValue) ?? 10,
+            maxActions: Int(controlMaxActionsField.stringValue) ?? 20
+        )
+        if computerUseEnabled {
+            let grant = controller.issueComputerUseGrant()
+            if !grant.ok {
+                let alert = NSAlert()
+                alert.messageText = t("computerUseGrantFailedTitle")
+                alert.informativeText = grant.message
+                alert.alertStyle = .warning
+                alert.addButton(withTitle: t("ok"))
+                alert.runModal()
+            }
+        } else {
+            controller.revokeComputerUseGrant()
+        }
         let shouldRestart = latestHealth || controller.isManagedProcessRunning
         settingsWindow?.close()
         rebuildMenu()

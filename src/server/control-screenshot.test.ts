@@ -87,6 +87,12 @@ describe("computer_screenshot full-screen sensitive-app gate", () => {
       opened: false,
       captureMode: "screen",
     });
+    vi.mocked(localE2e.captureE2eAppScreenshot).mockReset().mockResolvedValue({
+      path: fakePng,
+      bytes: 4,
+      opened: false,
+      captureMode: "app-window",
+    });
   });
 
   afterEach(async () => {
@@ -159,6 +165,37 @@ describe("computer_screenshot full-screen sensitive-app gate", () => {
     expect(localE2e.captureE2eAppScreenshot).toHaveBeenCalledTimes(1);
     delete process.env.CHATGPT2CODEX_CONTROL_CHATGPT;
     delete process.env.CHATGPT2CODEX_CONTROL_ALLOWLIST;
+  });
+
+  it("starts a bounded Computer Use task, returns an observation, and waits for its linked action", async () => {
+    process.env.CHATGPT2CODEX_CONTROL_ALLOWLIST = "TextEdit";
+    vi.mocked(macInput.resolveFrontmostApp).mockResolvedValue("TextEdit");
+    const ctx = makeCtx(stateDir, projectRoot);
+    const tools = await registeredTools(ctx);
+
+    const observed = await tools.computer_task_execute?.handler?.({
+      goal: "Click the editor and verify the next screen",
+      appName: "TextEdit",
+      maxSteps: 4,
+    });
+    expect(observed?.isError).toBeFalsy();
+    expect(observed?.structuredContent?.readyForNextAction).toBe(true);
+    const task = observed?.structuredContent?.task as { taskId?: string; step?: number } | undefined;
+    expect(task).toMatchObject({ taskId: expect.stringMatching(/^ctask_/), step: 1 });
+    expect(observed?.content?.some((item) => item.type === "image")).toBe(true);
+
+    const requested = await tools.computer_request_action?.handler?.({
+      taskId: task?.taskId,
+      appName: "TextEdit",
+      kind: "click",
+      target: { windowPoint: { xRel: 0.5, yRel: 0.5 } },
+      reason: "task step",
+    });
+    expect(requested?.structuredContent?.status).toBe("pending");
+
+    const waiting = await tools.computer_task_execute?.handler?.({ taskId: task?.taskId });
+    expect(waiting?.structuredContent?.readyForNextAction).toBe(false);
+    expect((waiting?.structuredContent?.action as { status?: string } | undefined)?.status).toBe("pending");
   });
 
   // computer_request_action (click/type/key) enforces both the sensitive-app

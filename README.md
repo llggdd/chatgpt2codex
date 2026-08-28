@@ -102,6 +102,29 @@ parallel while writes are serialized per project. Set
 `CHATGPT2CODEX_MAX_CONCURRENT_TASKS=1..8` before starting the runtime to tune
 the default concurrency of 2.
 
+On macOS, optional Computer Use can carry a bounded task through an
+observe → one explicit action → verify loop. In **Settings...**, enable
+**Allow bounded Computer Use from ChatGPT**, enter only the apps the task may
+touch, and choose a 1–60 minute lifetime plus a 1–100 action budget. Saving
+issues a local, instance-and-project-scoped Control Grant; disabling the
+setting, using the kill switch, expiration, or exhausting the budget revokes
+it. After configuration, the pending-control submenu shows remaining time and
+usage and can reissue or revoke the grant without reopening Settings. Remote
+MCP calls cannot create or expand this grant. Password managers,
+Terminal, System Settings, banking, and 2FA apps remain blocked even if named.
+The runtime exposes `computer_task_execute` for the persistent observation
+loop and `computer_request_action` for each individually confirmed action.
+
+The equivalent local CLI is:
+
+```bash
+CHATGPT2CODEX_CONTROL_ALLOWLIST="Safari,TextEdit" \
+  chatgpt2codex control grant on --project-root /path/to/project \
+  --apps "Safari,TextEdit" --minutes 10 --max 20
+chatgpt2codex control grant status
+chatgpt2codex control grant off
+```
+
 Verification retries are bounded to at most three and are only enabled for
 allowlisted verify-tier commands. Shell, E2E, and write tasks are never replayed
 automatically because repeating them could duplicate side effects. `change_and_verify`

@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createServer } from "./mcp-server.js";
 import type { Lease, ToolContext } from "../types.js";
 import { enqueue } from "../control/queue.js";
+import { issueControlGrant, readControlGrant } from "../control/grant.js";
 
 interface RegisteredToolLike {
   handler?: (input: Record<string, unknown>) => Promise<{
@@ -67,7 +68,7 @@ async function toolsListNames(ctx: ToolContext): Promise<string[]> {
   return listed?.tools.map((t) => t.name) ?? [];
 }
 
-const CONTROL_NAMES = ["computer_screenshot", "computer_request_action", "computer_action_status", "computer_kill_switch"];
+const CONTROL_NAMES = ["computer_screenshot", "computer_request_action", "computer_task_execute", "computer_action_status", "computer_kill_switch"];
 
 describe("desktop-control tool gating", () => {
   let stateDir: string;
@@ -87,7 +88,7 @@ describe("desktop-control tool gating", () => {
     await fs.rm(projectRoot, { recursive: true, force: true });
   });
 
-  it("registers all 4 control tools by default (no CHATGPT2CODEX_CONTROL set)", async () => {
+  it("registers all 5 control tools by default (no CHATGPT2CODEX_CONTROL set)", async () => {
     const { ctx } = makeCtx(stateDir, projectRoot);
     const tools = await registeredTools(ctx);
     for (const name of CONTROL_NAMES) {
@@ -95,7 +96,7 @@ describe("desktop-control tool gating", () => {
     }
   });
 
-  it("registers all 4 control tools when CHATGPT2CODEX_CONTROL=1", async () => {
+  it("registers all 5 control tools when CHATGPT2CODEX_CONTROL=1", async () => {
     process.env.CHATGPT2CODEX_CONTROL = "1";
     const { ctx } = makeCtx(stateDir, projectRoot);
     const tools = await registeredTools(ctx);
@@ -179,6 +180,38 @@ describe("desktop-control tool gating", () => {
     expect(result?.isError).toBeFalsy();
     expect(result?.structuredContent?.status).toBe("pending");
     expect(result?.structuredContent?.actionId).toEqual(expect.stringMatching(/^ctl_/));
+  });
+
+  it("lets a remote MCP session use a bounded grant that was issued locally for this instance", async () => {
+    process.env.CHATGPT2CODEX_CONTROL = "1";
+    process.env.CHATGPT2CODEX_CONTROL_ALLOWLIST = "TextEdit";
+    const { ctx, events } = makeCtx(stateDir, projectRoot);
+    ctx.remote = true;
+    ctx.identity = {
+      version: 1,
+      instanceId: "inst_remote-control-test",
+      displayName: "Remote Control Test",
+      createdAt: 0,
+      updatedAt: 0,
+    };
+    await issueControlGrant(stateDir, {
+      instanceId: ctx.identity.instanceId,
+      projectId: "proj",
+      apps: ["TextEdit"],
+      kinds: ["click"],
+      maxActions: 2,
+    });
+    const tools = await registeredTools(ctx);
+    const result = await tools.computer_request_action?.handler?.({
+      appName: "TextEdit",
+      kind: "click",
+      target: { windowPoint: { xRel: 0.5, yRel: 0.5 } },
+      reason: "remote grant test",
+    });
+    expect(result?.isError).toBeFalsy();
+    expect(result?.structuredContent?.status).toBe("pending");
+    await expect(readControlGrant(stateDir)).resolves.toMatchObject({ usedActions: 1, maxActions: 2 });
+    expect(events.some((event) => event.type === "control.grant.consumed")).toBe(true);
   });
 
   it("blocks a request targeting a sensitive app even with a valid control lease", async () => {
